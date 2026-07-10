@@ -1,0 +1,29 @@
+{
+  "_comment": "The vpc-provider entry below is a SYNTHETIC default-VPC shape keyed to the dummy account 000000000000. It exists so `CDK_DEFAULT_ACCOUNT=000000000000 CDK_DEFAULT_REGION=us-east-1 cdk synth` works offline (no AWS credentials). A real deploy runs with the real account id, which produces a different context key, so the CLI performs a real lookup and appends it here — this entry is never used for a deploy.",
+  "vpc-provider:account=000000000000:filter.isDefault=true:region=us-east-1:returnAsymmetricSubnets=true": {
+    "vpcId": "vpc-0f4k3d3f4u17d0000",
+    "vpcCidrBlock": "172.31.0.0/16",
+    "ownerAccountId": "000000000000",
+    "availabilityZones": [],
+    "subnetGroups": [
+      {
+        "name": "Public",
+        "type": "Public",
+        "subnets": [
+          {
+            "subnetId": "subnet-0f4k30000000000a1",
+            "cidr": "172.31.0.0/20",
+            "availabilityZone": "us-east-1a",
+            "routeTableId": "rtb-0f4k3000000000001"
+          },
+          {
+            "subnetId": "subnet-0f4k30000000000b2",
+            "cidr": "172.31.16.0/20",
+            "availabilityZone": "us-east-1b",
+            "routeTableId": "rtb-0f4k3000000000001"
+          }
+        ]
+      }
+    ]
+  }
+}

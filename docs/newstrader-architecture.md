@@ -1,6 +1,6 @@
 # NewsTrader — Architecture (v1, Canada-adjusted)
 
-*Status: approved design, 2026-07-10. All prices/limits/availability claims were verified against live vendor sources on 2026-07-10 unless marked **[re-check at build]**. The user is a Canadian resident — this shapes the broker and data-vendor choices throughout.*
+_Status: approved design, 2026-07-10. All prices/limits/availability claims were verified against live vendor sources on 2026-07-10 unless marked **[re-check at build]**. The user is a Canadian resident — this shapes the broker and data-vendor choices throughout._
 
 ---
 
@@ -49,14 +49,14 @@ Both queues are SQS Standard with DLQs and alarms. Exactly-once behavior comes f
 
 ### 2.1 V1 sources (build in this order)
 
-| # | Source | Cost | Latency | Tickers tagged | Notes |
-|---|--------|------|---------|----------------|-------|
-| 1 | **SEC EDGAR** `getcurrent` Atom feed | $0 | ~1–2 min (verified live) | No — CIK; map via `company_tickers.json` | The equities backbone. Filing types: **8-K** (P0), Form 4, 13D/G (P1). ≤10 req/s, mandatory User-Agent with contact email (403 without it — verified). Poll every 1 min; sub-minute polling buys nothing at an hours horizon. |
-| 2 | **Massive (ex-Polygon) news API** — Stocks Starter | $29/mo | minutes to ~1 hour | Yes + sentiment | The Benzinga-via-Alpaca replacement (Alpaca is not available as a broker to Canadians). Unlimited API calls; archive to 2016. Honest caveat: slower than Benzinga's wire — acceptable at hours horizon; the $99/mo Benzinga add-on on Massive is the priced, no-code-change upgrade. |
-| 3 | **Finnhub free** | $0 | minutes | Yes (company-news) | Breaking-news side feed (60 req/min) + earnings calendar. Free tier is personal-use; do NOT use for price bars (candles endpoint 403s on free keys — verified). |
-| 4 | **Macro calendars** (Fed FOMC page, BLS, BEA) | $0 | scheduled | n/a | Static pages refreshed monthly. Feed the deterministic `calendar_match` decision feature (§6). |
-| 5 | **GlobeNewswire RSS** | $0 | ~1–5 min | No — regex `(NYSE\|Nasdaq): XYZ` works ~95% | Redundancy + wire-vs-aggregator latency yardstick for source-reliability analytics. |
-| 6 | **Crypto RSS** — CoinDesk, Cointelegraph, The Block | $0 | minutes | No — trivial for a 3-coin universe | Alpha is modest; primary value is measuring crypto news reaction. |
+| #   | Source                                              | Cost   | Latency                  | Tickers tagged                              | Notes                                                                                                                                                                                                                                                                                |
+| --- | --------------------------------------------------- | ------ | ------------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | **SEC EDGAR** `getcurrent` Atom feed                | $0     | ~1–2 min (verified live) | No — CIK; map via `company_tickers.json`    | The equities backbone. Filing types: **8-K** (P0), Form 4, 13D/G (P1). ≤10 req/s, mandatory User-Agent with contact email (403 without it — verified). Poll every 1 min; sub-minute polling buys nothing at an hours horizon.                                                        |
+| 2   | **Massive (ex-Polygon) news API** — Stocks Starter  | $29/mo | minutes to ~1 hour       | Yes + sentiment                             | The Benzinga-via-Alpaca replacement (Alpaca is not available as a broker to Canadians). Unlimited API calls; archive to 2016. Honest caveat: slower than Benzinga's wire — acceptable at hours horizon; the $99/mo Benzinga add-on on Massive is the priced, no-code-change upgrade. |
+| 3   | **Finnhub free**                                    | $0     | minutes                  | Yes (company-news)                          | Breaking-news side feed (60 req/min) + earnings calendar. Free tier is personal-use; do NOT use for price bars (candles endpoint 403s on free keys — verified).                                                                                                                      |
+| 4   | **Macro calendars** (Fed FOMC page, BLS, BEA)       | $0     | scheduled                | n/a                                         | Static pages refreshed monthly. Feed the deterministic `calendar_match` decision feature (§6).                                                                                                                                                                                       |
+| 5   | **GlobeNewswire RSS**                               | $0     | ~1–5 min                 | No — regex `(NYSE\|Nasdaq): XYZ` works ~95% | Redundancy + wire-vs-aggregator latency yardstick for source-reliability analytics.                                                                                                                                                                                                  |
+| 6   | **Crypto RSS** — CoinDesk, Cointelegraph, The Block | $0     | minutes                  | No — trivial for a 3-coin universe          | Alpha is modest; primary value is measuring crypto news reaction.                                                                                                                                                                                                                    |
 
 **8-K item codes route deterministically — no LLM triage needed for filings.** The Atom feed carries item codes inline (verified). High-signal codes: 2.02 (earnings results), 5.02 (CEO/CFO departure), 4.02 (restatement/non-reliance), 1.03 (bankruptcy), 2.01 (M&A completion), 2.05 (restructuring), 2.06 (impairment), 3.01 (delisting), 1.01/1.02 (material agreements), 7.01/8.01 (Reg FD grab-bag — these DO go to the LLM).
 
@@ -90,7 +90,7 @@ NewsAPI.org (24-h delayed free tier, $449/mo paid, no tickers) · scraping X or 
 
 **Everything is a scheduled or queue-triggered Lambda; there are no long-running processes in v1.** Pollers run on EventBridge Scheduler crons (1–5 min — free tier covers this volume ~100×). At an hours-to-days horizon, a 1–2 minute polling delay is noise; websocket consumers (Fargate) are a minutes-migration concern, not a v1 one.
 
-**Pollers do exactly three things:** fetch since their cursor (cursor in Postgres), write the raw payload to S3 (`raw/{source}/{yyyy-mm-dd}/{hash}.json`), enqueue a pointer message. They never parse, never dedup, never call the LLM — this keeps them trivially re-runnable and makes S3 the immutable replay source of truth.
+**Pollers do exactly three things:** fetch since their cursor (cursor in Postgres), write the raw payload to S3 (`raw/{source}/{yyyy-mm-dd}/{contentHash}-{externalId hash}.json` — externalId is part of the key so same-text items with different identities never clobber each other's verbatim payload), enqueue a pointer message. They never parse, never dedup, never call the LLM — this keeps them trivially re-runnable and makes S3 the immutable replay source of truth.
 
 **One `process` Lambda runs dedup → resolve → interpret → decide in sequence** (reserved concurrency ~5 so a news burst cannot stampede Anthropic rate limits; backpressure is free — messages age harmlessly in-queue). A separate `execute` Lambda consumes order intents. Splitting further into per-stage Lambdas/queues is deliberate non-design: at ≤2,500 items/day there is no throughput reason, and every queue boundary would add a schema version, DLQ, alarm set, and local-dev shim. The idempotency keys (below) make that refactor safe later if a stage ever needs independent scaling.
 
@@ -98,12 +98,12 @@ NewsAPI.org (24-h delayed free tier, $449/mo paid, no tickers) · scraping X or 
 
 SQS Standard is at-least-once with reordering; consumers are idempotent instead:
 
-| Stage | Idempotency key |
-|---|---|
-| Raw ingest | unique `(source_id, external_id)` — `INSERT … ON CONFLICT DO NOTHING` |
-| LLM interpret | unique `(cluster_id, target, prompt_version, model_id)` — completed row short-circuits; at most one LLM call per key |
-| Decide | unique `(signal_id, rules_version_id, replay_run_id)` |
-| Execute | deterministic `client_order_id = ulid-from-hash(decision_id)` passed to the broker — a redelivered message cannot double-order |
+| Stage         | Idempotency key                                                                                                                |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Raw ingest    | unique `(source_id, external_id)` — `INSERT … ON CONFLICT DO NOTHING`                                                          |
+| LLM interpret | unique `(cluster_id, target, prompt_version, model_id)` — completed row short-circuits; at most one LLM call per key           |
+| Decide        | unique `(signal_id, rules_version_id, replay_run_id)`                                                                          |
+| Execute       | deterministic `client_order_id = ulid-from-hash(decision_id)` passed to the broker — a redelivered message cannot double-order |
 
 Queue config: batch 1–5, visibility timeout ≥ 6× Lambda timeout, `maxReceiveCount` 3–5 → DLQ. A message in a DLQ is a bug, not noise — every DLQ alarm pages immediately.
 
@@ -129,7 +129,7 @@ Canada makes IBKR unavoidable (it is both the only credible API broker for Canad
 1. **Web API with OAuth 1.0a (self-service portal) — try first.** Officially positioned as institutional, but verified working for individual accounts including paper (ibind project documentation; an IBKR API agent confirmed no technical limitation). Pure HTTPS → Lambda-friendly, **no gateway container at all**. Activation takes 24 h–2 weeks; it is semi-official and could be closed — hence the fallback. **[re-check at build]**
 2. **IB Gateway + IBC in a container** (`gnzsnz/ib-gateway-docker`) on a small EC2/ECS (~$15/mo). Key verified fact: **paper accounts are not enrolled in 2FA** — paper-credential gateways run genuinely unattended (community-verified, incl. the docker image maintainer). The weekly Sunday-1am-ET 2FA ritual only begins with live credentials at go-live — by which time IBKR's retail OAuth 2.0 (announced as "being considered") should be re-checked.
 
-**CIRO carve-out (verified):** IBKR Canada prohibits client applications from submitting API orders for *Canadian-exchange* products. Irrelevant here — the universe is US-listed only.
+**CIRO carve-out (verified):** IBKR Canada prohibits client applications from submitting API orders for _Canadian-exchange_ products. Irrelevant here — the universe is US-listed only.
 
 ### 4.6 Repo layout and local development
 
@@ -154,7 +154,7 @@ newstrader/                     # pnpm workspace
 
 **What changes:** pollers → Fargate websocket consumers emitting the same zod `RawItem`; Kraken WS v2 replaces REST polling; Massive→Benzinga add-on (or faster feed); a live quote cache; SNS fan-out between decide and execute. **What is locked in NOW to make that a re-wire, not a rewrite:** versioned message contracts, the `SourceAdapter` interface (`fetchSince(cursor) → RawItem[]` — a push adapter is just another implementation), content-derived idempotency keys (safe poll/push coexistence during cutover), and the pure decision engine.
 
-**Trigger — the analytics produce their own migration evidence:** migrate when `reaction_summary` shows the median `time_to_half_of_1d_move` for *traded* event types dropping below realistic entry latency (i.e., measured alpha decay beats the system to the trade). Cost delta ≈ +$100–120/mo.
+**Trigger — the analytics produce their own migration evidence:** migrate when `reaction_summary` shows the median `time_to_half_of_1d_move` for _traded_ event types dropping below realistic entry latency (i.e., measured alpha decay beats the system to the trade). Cost delta ≈ +$100–120/mo.
 
 ---
 
@@ -188,6 +188,7 @@ news_cluster_items (cluster_id, item_id, similarity, lag_from_first_ms)
 ```
 
 **Clustering algorithm (deterministic, no embeddings, no extra API):**
+
 1. Exact `content_hash` match → attach immediately.
 2. Else candidate block = clusters sharing ≥1 resolved instrument within a 48 h window; similarity = normalized headline+lede trigram (`pg_trgm`) or MinHash, threshold ≈ 0.7.
 3. **Serialize attach per block with a Postgres advisory lock** — two concurrent Lambdas processing echoes of the same story must not mint duplicate clusters (that would silently corrupt popularity and scoop stats).
@@ -259,8 +260,9 @@ fills (id, order_id, fill_qty, fill_price, fee, filled_at, is_simulated)
 ```
 
 **The replay contract:**
+
 - `decide(signal, features, quote_snapshot, rulesConfig)` is a **pure function** in `packages/core`; `features._engine_git_sha` is recorded because config versioning does not protect against code drift.
-- **Mode A (regression):** re-run the *live* rules version over stored inputs verbatim → must reproduce live decisions **bit-for-bit**. This is a CI test.
+- **Mode A (regression):** re-run the _live_ rules version over stored inputs verbatim → must reproduce live decisions **bit-for-bit**. This is a CI test.
 - **Mode B (counterfactual):** process signals chronologically per run; reuse stored `world` features and `quote_snapshot`, but **recompute `portfolio`-tagged features (exposure, open positions) from the run's own simulated fills** — under a different rules version, earlier decisions differ, so the live portfolio state would be an internally inconsistent counterfactual. Fills simulated by the same SimBroker fill/slippage code used in live paper mode (§7).
 - `replay_run_metrics` (batch job + view): hit rate, avg bps/trade, profit factor, max drawdown, exposure-adjusted return per run — "compare rules v3 vs v7" has a defined output, not just raw rows.
 
@@ -339,12 +341,13 @@ news_bursts (VIEW: instrument_id, rolling window → n_signals, n_positive, n_ne
 ```ts
 type CanonicalSymbol = { assetClass: 'us_equity' | 'crypto'; symbol: string };
 type OrderIntent = {
-  clientOrderId: string;                  // ULID — idempotency key, survives retries/restarts
+  clientOrderId: string; // ULID — idempotency key, survives retries/restarts
   symbol: CanonicalSymbol;
   side: 'buy' | 'sell';
-  qty: { type: 'shares' | 'notional'; value: string };   // decimal strings, never floats
+  qty: { type: 'shares' | 'notional'; value: string }; // decimal strings, never floats
   orderType: 'market' | 'limit' | 'stop' | 'stop_limit';
-  limitPrice?: string; stopPrice?: string;
+  limitPrice?: string;
+  stopPrice?: string;
   tif: 'day' | 'gtc' | 'ioc';
   session: 'regular' | 'queue_for_open';
 };
@@ -358,14 +361,15 @@ interface BrokerAdapter {
   getPositions(): Promise<Position[]>;
   getAccountState(): Promise<AccountState>;
   getClock(): Promise<{ isOpen: boolean; nextOpen: string; nextClose: string }>;
-  getSnapshot(symbols: CanonicalSymbol[]): Promise<Snapshot[]>;   // execution-grade pre-trade check
+  getSnapshot(symbols: CanonicalSymbol[]): Promise<Snapshot[]>; // execution-grade pre-trade check
   streamOrderUpdates(onEvent: (e: OrderEvent) => void): Promise<Unsubscribe>;
-  capabilities(): BrokerCapabilities;   // { fractional, notional, brackets, shorting, tifs, assetClasses }
+  capabilities(): BrokerCapabilities; // { fractional, notional, brackets, shorting, tifs, assetClasses }
   toVenueSymbol(s: CanonicalSymbol): string;
   fromVenueSymbol(v: string): CanonicalSymbol;
 }
 
-interface MarketDataProvider {          // deliberately separate — data and execution venues diverge
+interface MarketDataProvider {
+  // deliberately separate — data and execution venues diverge
   getBars(symbol, tf, from, to): Promise<Bar[]>;
   getQuote(symbol, asOf?): Promise<Quote>;
 }
@@ -374,6 +378,7 @@ interface MarketDataProvider {          // deliberately separate — data and ex
 `capabilities()` is load-bearing with three venues of differing order-type support; strategy code must never assume venue-isms. The strategy layer never imports a broker SDK.
 
 **Venue specifics (verified 2026-07-10):**
+
 - **IBKR Canada:** IBKR Pro pricing only (Lite is US-only); paper account arrives automatically with an approved live account — so the live account is opened and modestly funded up front (market-data fees bill to it and are **shared to paper** after enabling sharing, ~24 h). Data: US Securities Snapshot bundle US$10/mo (waived at $30/mo commissions) + Streaming add-on US$4.50/mo for streaming NBBO. **No spot crypto for Canadian clients** (ETPs/futures only). TS client: `@stoqey/ib` (gateway path) or hand-rolled REST (OAuth path). Historical-data API pacing (60 req/10 min) disqualifies IBKR as a bulk bar source — event-window gap-filler at most.
 - **Kraken Canada:** restricted dealer (Payward Canada, OSC principal regulator, all provinces/territories, April 2025); CAD funding via Interac. **Adapter constraints:** never send margin/leverage params (Canadians ineligible; futures too); SOL carries a CAD 30k rolling-12-month net-buy cap in non-exempt provinces (exempt: AB/BC/MB/QC/SK) — irrelevant at paper/dust scale, flagged for scale-up. Fees 0.25%/0.40% base, falling with volume. TS client: `kraken-api` (tiagosiebler/sieblyio suite); WS v2 order entry + `executions` channel at go-live.
 - **Fallback broker if IBKR becomes untenable:** moomoo Canada — the only other real order-placement API for US stocks available to Canadians (OpenD local gateway daemon; retail-grade docs). Questrade blocks retail API orders (partner-only); Webull CA has no official API; tastytrade left Canada (June 2025).
@@ -394,15 +399,15 @@ interface MarketDataProvider {          // deliberately separate — data and ex
 
 ## 9. Costs (USD/mo, verified 2026-07-10)
 
-| Line | $/mo | Notes |
-|---|---|---|
-| RDS `db.t4g.micro` + 20 GB gp3 | ~$14 | upsize on credit alarms only |
-| Lambda + SQS + S3 + CloudWatch | ~$5–15 | mostly free tier; log retention 30 d |
-| EC2 for IB Gateway | $0 or ~$15 | only if the OAuth path fails |
-| Massive Stocks Starter | $29 | news + snapshot + flat files + 5 yr minute history |
-| IBKR market data (snapshot bundle + streaming add-on) | $14.50 | $10 of it waived at $30/mo commissions once live |
-| LLM (Sonnet-only, prompt caching, ~300–900 clusters/day) | ~$40–90 | per-day spend breaker; earnings-season peaks 3–5× |
-| **Total v1** | **~$100–185** | ≈ CA$135–250 |
+| Line                                                     | $/mo          | Notes                                              |
+| -------------------------------------------------------- | ------------- | -------------------------------------------------- |
+| RDS `db.t4g.micro` + 20 GB gp3                           | ~$14          | upsize on credit alarms only                       |
+| Lambda + SQS + S3 + CloudWatch                           | ~$5–15        | mostly free tier; log retention 30 d               |
+| EC2 for IB Gateway                                       | $0 or ~$15    | only if the OAuth path fails                       |
+| Massive Stocks Starter                                   | $29           | news + snapshot + flat files + 5 yr minute history |
+| IBKR market data (snapshot bundle + streaming add-on)    | $14.50        | $10 of it waived at $30/mo commissions once live   |
+| LLM (Sonnet-only, prompt caching, ~300–900 clusters/day) | ~$40–90       | per-day spend breaker; earnings-season peaks 3–5×  |
+| **Total v1**                                             | **~$100–185** | ≈ CA$135–250                                       |
 
 Priced contingencies: Benzinga-on-Massive +$99 · X pay-per-use ≈$165–315 true cost (reads + LLM overhead) · Databento backfill $0 (within $125 credit) · minutes-migration ≈ +$100–120. AWS Budget alarm at $200 → kill switch.
 
@@ -414,31 +419,31 @@ Do not start a milestone before the previous one's verification passes.
 
 **M0 — Setup + ingest-only skeleton (week 1).**
 Open the IBKR Canada account NOW (approval takes days; paper arrives automatically; submit the OAuth 1.0a self-service request in parallel — 24 h–2 wk activation). Subscribe Massive Starter. Build EDGAR + Massive-news + RSS pollers → S3/Postgres + clustering. **Zero LLM spend.**
-*Verified when:* 5 trading days of data collected; items→clusters ratio measured (this decides Sonnet-only vs triage); ~50 clusters hand-checked for correct echo-collapse.
+_Verified when:_ 5 trading days of data collected; items→clusters ratio measured (this decides Sonnet-only vs triage); ~50 clusters hand-checked for correct echo-collapse.
 
 **M1 — Entity resolution + point-in-time universe.**
 Aliases, CIK mapping, membership backfill from fja05680/sp500, forward daily diff.
-*Verified when:* a ~100-item hand-labeled sample hits target precision/recall; a membership query for a random 2019 date matches known history.
+_Verified when:_ a ~100-item hand-labeled sample hits target precision/recall; a membership query for a random 2019 date matches known history.
 
 **M2 — LLM signals.**
 Sonnet structured outputs, `prompt_version` discipline, S3 audit trail, ~100-item golden set in CI (prompt changes are measured, never vibes).
-*Verified when:* golden-set accuracy passes; a live week of signals reads sane; daily cost inside budget.
+_Verified when:_ golden-set accuracy passes; a live week of signals reads sane; daily cost inside budget.
 
 **M3 — Price recording + reaction analytics.**
 Massive snapshot recorder + nightly flat-file reconcile + Kraken poller + 2-yr backfill; `reaction_measurements` / `recovery_measurements` / `reaction_summary` jobs.
-*Verified when:* jobs reproduce known stylized facts (e.g., positive earnings-surprise drift) on our own collected events; bar row counts match expected market minutes.
+_Verified when:_ jobs reproduce known stylized facts (e.g., positive earnings-surprise drift) on our own collected events; bar row counts match expected market minutes.
 
 **M4 — Decision engine, record-only.**
 `rules_versions`, gates, feature+quote snapshots, decisions including skips; replay Mode A.
-*Verified when:* Mode A reproduces live decisions bit-for-bit in CI; skip-reason distribution is sensible (neither ~0% nor ~100% traded).
+_Verified when:_ Mode A reproduces live decisions bit-for-bit in CI; skip-reason distribution is sensible (neither ~0% nor ~100% traded).
 
 **M5 — Execution via SimBroker + safety rail.**
 Order queue, execute Lambda, kill switch, reconciler, position-manager exits; Kraken adapter running `validate=true`.
-*Verified when:* a live news item flows end-to-end into a simulated position and out through an exit; kill-switch drill halts entries; injected position drift is caught; a duplicated queue message does not double-order.
+_Verified when:_ a live news item flows end-to-end into a simulated position and out through an exit; kill-switch drill halts entries; injected position drift is caught; a duplicated queue message does not double-order.
 
 **M6 — Replay Mode B + evaluation.**
 `replay_run_metrics`, source-reliability rollup, `news_bursts`, calibration report, weekly report.
-*Verified when:* two rule versions replay over the same history into a comparable metrics report generated from real logged data.
+_Verified when:_ two rule versions replay over the same history into a comparable metrics report generated from real logged data.
 
 **M7 — Pre-live stage (entered only when metrics justify).**
 IBKR paper integration behind the same adapter; Kraken dust-size calibration phase; live cutover is a config swap gated on a human decision.

@@ -1,0 +1,68 @@
+{
+  "_note": "SYNTHETIC fixture: three ascending-by-published_utc results in the exact field shape of the documented sample (https://massive.com/docs/rest/stocks/news.md). Used to exercise cursor advancement, multi-ticker hints, and absent-insights handling.",
+  "count": 3,
+  "request_id": "00000000000000000000000000000000",
+  "results": [
+    {
+      "article_url": "https://example-news.test/articles/alpha-beats-earnings",
+      "author": "Jane Writer",
+      "description": "Alpha Corp reported quarterly earnings well above consensus estimates.",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+      "insights": [
+        {
+          "sentiment": "positive",
+          "sentiment_reasoning": "Earnings beat consensus by a wide margin.",
+          "ticker": "ALPH"
+        }
+      ],
+      "keywords": ["earnings"],
+      "published_utc": "2026-07-10T14:00:00Z",
+      "publisher": {
+        "homepage_url": "https://example-news.test/",
+        "name": "Example News"
+      },
+      "tickers": ["ALPH"],
+      "title": "Alpha Corp beats earnings estimates"
+    },
+    {
+      "article_url": "https://example-news.test/articles/beta-gamma-merger-talks",
+      "author": "John Reporter",
+      "description": "Beta Inc and Gamma Ltd are reportedly in advanced merger discussions.",
+      "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2",
+      "insights": [
+        {
+          "sentiment": "positive",
+          "sentiment_reasoning": "Merger premium expected for Beta shareholders.",
+          "ticker": "BETA"
+        },
+        {
+          "sentiment": "neutral",
+          "sentiment_reasoning": "Acquirer impact unclear pending terms.",
+          "ticker": "GMMA"
+        }
+      ],
+      "keywords": ["mergers"],
+      "published_utc": "2026-07-10T14:05:00Z",
+      "publisher": {
+        "homepage_url": "https://example-news.test/",
+        "name": "Example News"
+      },
+      "tickers": ["BETA", "GMMA"],
+      "title": "Beta and Gamma in advanced merger talks"
+    },
+    {
+      "article_url": "https://example-news.test/articles/market-wrap",
+      "author": "Wire Desk",
+      "description": "Stocks closed mixed in quiet summer trading.",
+      "id": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc3",
+      "published_utc": "2026-07-10T14:10:00Z",
+      "publisher": {
+        "homepage_url": "https://example-news.test/",
+        "name": "Example News"
+      },
+      "tickers": [],
+      "title": "Market wrap: stocks close mixed"
+    }
+  ],
+  "status": "OK"
+}

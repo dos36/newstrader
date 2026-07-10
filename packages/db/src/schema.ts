@@ -75,9 +75,14 @@ export const newsClusters = pgTable(
     itemCount: bigint('item_count', { mode: 'number' }).notNull().default(1),
     distinctSourceCount: bigint('distinct_source_count', { mode: 'number' }).notNull().default(1),
     lastItemAt: tz('last_item_at').notNull(),
-    status: text('status', { enum: ['open', 'closed'] }).notNull().default('open'),
+    status: text('status', { enum: ['open', 'closed'] })
+      .notNull()
+      .default('open'),
   },
-  (t) => [index('clusters_first_received_idx').on(t.firstReceivedAt), index('clusters_status_idx').on(t.status)],
+  (t) => [
+    index('clusters_first_received_idx').on(t.firstReceivedAt),
+    index('clusters_status_idx').on(t.status),
+  ],
 );
 
 export const newsClusterItems = pgTable(
@@ -92,7 +97,10 @@ export const newsClusterItems = pgTable(
     similarity: real('similarity').notNull(),
     lagFromFirstMs: bigint('lag_from_first_ms', { mode: 'number' }).notNull(),
   },
-  (t) => [primaryKey({ columns: [t.clusterId, t.itemId] }), uniqueIndex('cluster_items_item_uq').on(t.itemId)],
+  (t) => [
+    primaryKey({ columns: [t.clusterId, t.itemId] }),
+    uniqueIndex('cluster_items_item_uq').on(t.itemId),
+  ],
 );
 
 export const instruments = pgTable(
@@ -111,7 +119,10 @@ export const instruments = pgTable(
     /** Delisted rows are kept forever (survivorship guard). */
     delistedAt: tz('delisted_at'),
   },
-  (t) => [uniqueIndex('instruments_symbol_class_uq').on(t.symbol, t.assetClass), index('instruments_cik_idx').on(t.cik)],
+  (t) => [
+    uniqueIndex('instruments_symbol_class_uq').on(t.symbol, t.assetClass),
+    index('instruments_cik_idx').on(t.cik),
+  ],
 );
 
 /** Point-in-time index membership. Universe queries MUST go through this with an asOf. */

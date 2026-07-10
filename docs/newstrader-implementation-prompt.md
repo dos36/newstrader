@@ -1,6 +1,6 @@
 # Implementation prompt: NewsTrader v1 (TypeScript / AWS / Canada)
 
-*Version 2 — supersedes the earlier Python-stack draft. Companion document: `newstrader-architecture.md` (same folder) — where this prompt and the architecture doc disagree, the architecture doc wins.*
+_Version 2 — supersedes the earlier Python-stack draft. Companion document: `newstrader-architecture.md` (same folder) — where this prompt and the architecture doc disagree, the architecture doc wins._
 
 ---
 
@@ -37,14 +37,14 @@ Scheduled: bars-recorder (1m) · position-manager (5–15m exits) · reconciler 
 
 ## 3. Sources (v1)
 
-| Source | Access | Notes |
-|---|---|---|
-| SEC EDGAR | `getcurrent` Atom poller, 1-min cron | 8-K first (route deterministically by item code — 2.02, 5.02, 4.02, 1.03, 2.01, 2.05, 2.06, 3.01, 1.01/1.02; 7.01/8.01 go to the LLM), then Form 4, 13D/G. ≤10 req/s, mandatory User-Agent with contact email. CIK→ticker via `company_tickers.json`. |
-| Massive (ex-Polygon) news API | REST poll 1–2 min, Stocks Starter ($29/mo) | Primary tagged news feed. Store their ticker tags + sentiment as source-provided hints, not truth. |
-| Finnhub free | REST | Breaking-news side feed + earnings calendar (feeds `calendar_match`). Never use it for price bars. |
-| Macro calendars | monthly scrape of Fed/BLS/BEA schedules | Deterministic `calendar_match` decision feature. |
-| GlobeNewswire RSS | poll 1–5 min | Redundancy + latency yardstick. |
-| Crypto RSS (CoinDesk/Cointelegraph/The Block) | poll 2–5 min | 3-coin universe makes entity resolution trivial. |
+| Source                                        | Access                                     | Notes                                                                                                                                                                                                                                                 |
+| --------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SEC EDGAR                                     | `getcurrent` Atom poller, 1-min cron       | 8-K first (route deterministically by item code — 2.02, 5.02, 4.02, 1.03, 2.01, 2.05, 2.06, 3.01, 1.01/1.02; 7.01/8.01 go to the LLM), then Form 4, 13D/G. ≤10 req/s, mandatory User-Agent with contact email. CIK→ticker via `company_tickers.json`. |
+| Massive (ex-Polygon) news API                 | REST poll 1–2 min, Stocks Starter ($29/mo) | Primary tagged news feed. Store their ticker tags + sentiment as source-provided hints, not truth.                                                                                                                                                    |
+| Finnhub free                                  | REST                                       | Breaking-news side feed + earnings calendar (feeds `calendar_match`). Never use it for price bars.                                                                                                                                                    |
+| Macro calendars                               | monthly scrape of Fed/BLS/BEA schedules    | Deterministic `calendar_match` decision feature.                                                                                                                                                                                                      |
+| GlobeNewswire RSS                             | poll 1–5 min                               | Redundancy + latency yardstick.                                                                                                                                                                                                                       |
+| Crypto RSS (CoinDesk/Cointelegraph/The Block) | poll 2–5 min                               | 3-coin universe makes entity resolution trivial.                                                                                                                                                                                                      |
 
 No X/Twitter in v1. No Alpaca anywhere. Design `SourceAdapter` (`fetchSince(cursor) → RawItem[]`) so push-based sources drop in later.
 
@@ -68,7 +68,7 @@ No X/Twitter in v1. No Alpaca anywhere. Design `SourceAdapter` (`fetchSince(curs
 
 - `decide(signal, features, quote_snapshot, rulesConfig) → decision` is a **pure function**. Every gate records pass/fail + observed + threshold, even after the first failure. Skips are recorded with `skip_reason`.
 - **V1 gates (thresholds in `rules_versions.config`, all replayable):** direction bullish (long-only) · `already_expected=false` · confidence ≥ 0.7 · event_type in the whitelist populated by the event-study data (an event type qualifies only when its measured post-news drift beats assumed costs) · stale-move check (price moved < X% since `first_received_at`; default 3%) · liquidity floor (20-day median dollar volume) · market-session policy (off-hours news ⇒ `queue_for_open`, recorded) · burst feature available as a gate/boost (`signals_same_instrument_7d`).
-- **Sizing:** fixed-fractional (25–50 bps of paper equity at risk per trade), volatility-scaled (20-day ATR). No confidence-proportional sizing in v1 — log what it *would* have done.
+- **Sizing:** fixed-fractional (25–50 bps of paper equity at risk per trade), volatility-scaled (20-day ATR). No confidence-proportional sizing in v1 — log what it _would_ have done.
 - **Exits:** scheduled position-manager — time-exit at signal `horizon` (mandatory), stop-loss bps, close-on-opposing-signal — writing `action=close` decision rows (exits replayable). Protective stop placed at entry where the venue supports brackets.
 - **Portfolio limits:** max 10 concurrent positions, 1 per ticker, max 30% per sector; 2% daily drawdown kill switch.
 - **Reconciler:** every 15 min, diff broker/sim positions + open orders vs local state; any drift → kill switch + alert.
@@ -83,13 +83,13 @@ Implement the `BrokerAdapter` + `MarketDataProvider` interfaces from the archite
 
 ## 8. Build order — milestones with verification gates
 
-0. **Setup + ingest-only skeleton (week 1).** IBKR account opened (human task, flag it); Massive Starter subscribed. EDGAR + Massive + RSS pollers → S3/Postgres + clustering. ZERO LLM spend. *Gate:* 5 trading days collected; items→clusters ratio measured; ~50 clusters hand-checked.
-1. **Entity resolution + PIT universe.** *Gate:* ~100-item hand-check precision/recall; a 2019 membership query matches history.
-2. **LLM signals + golden set.** ~100 hand-labeled items in CI; prompt changes must not regress. *Gate:* golden set passes; a live week of signals reads sane; cost in budget.
-3. **Price recording + reaction analytics.** Recorder, backfill, reaction/recovery jobs. *Gate:* known stylized facts reproduce (e.g., positive earnings-surprise drift) on own data.
-4. **Decision engine, record-only.** No orders yet. Replay **Mode A**: re-running the live rules version over stored inputs reproduces live decisions **bit-for-bit** (CI test). *Gate:* Mode A passes; skip-reason distribution sensible.
-5. **Execution via SimBroker + safety rail.** Kill switch, reconciler, position-manager, Kraken validate-mode adapter. *Gate:* live news → simulated position → exit end-to-end; kill-switch drill; injected drift caught; duplicate message doesn't double-order.
-6. **Replay Mode B + evaluation.** Counterfactual replay (chronological, per-run simulated portfolio; `world` features reused, `portfolio` features recomputed from the run's own fills; `signal_filter {prompt_version, model_id}` respected), `replay_run_metrics` (hit rate, bps/trade, profit factor, max drawdown), source-reliability rollup, calibration report (confidence deciles vs realized hit rate), weekly markdown report. *Gate:* two rule versions produce a comparable metrics report from real data.
+0. **Setup + ingest-only skeleton (week 1).** IBKR account opened (human task, flag it); Massive Starter subscribed. EDGAR + Massive + RSS pollers → S3/Postgres + clustering. ZERO LLM spend. _Gate:_ 5 trading days collected; items→clusters ratio measured; ~50 clusters hand-checked.
+1. **Entity resolution + PIT universe.** _Gate:_ ~100-item hand-check precision/recall; a 2019 membership query matches history.
+2. **LLM signals + golden set.** ~100 hand-labeled items in CI; prompt changes must not regress. _Gate:_ golden set passes; a live week of signals reads sane; cost in budget.
+3. **Price recording + reaction analytics.** Recorder, backfill, reaction/recovery jobs. _Gate:_ known stylized facts reproduce (e.g., positive earnings-surprise drift) on own data.
+4. **Decision engine, record-only.** No orders yet. Replay **Mode A**: re-running the live rules version over stored inputs reproduces live decisions **bit-for-bit** (CI test). _Gate:_ Mode A passes; skip-reason distribution sensible.
+5. **Execution via SimBroker + safety rail.** Kill switch, reconciler, position-manager, Kraken validate-mode adapter. _Gate:_ live news → simulated position → exit end-to-end; kill-switch drill; injected drift caught; duplicate message doesn't double-order.
+6. **Replay Mode B + evaluation.** Counterfactual replay (chronological, per-run simulated portfolio; `world` features reused, `portfolio` features recomputed from the run's own fills; `signal_filter {prompt_version, model_id}` respected), `replay_run_metrics` (hit rate, bps/trade, profit factor, max drawdown), source-reliability rollup, calibration report (confidence deciles vs realized hit rate), weekly markdown report. _Gate:_ two rule versions produce a comparable metrics report from real data.
 7. **Pre-live (human-gated):** IBKR paper behind the same adapter; Kraken dust-size calibration; live cutover is a config swap plus a code change removing the paper-only guard.
 
 ## 9. Testing requirements
