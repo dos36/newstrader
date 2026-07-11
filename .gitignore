@@ -5,5 +5,5 @@ cdk.out/
 .env.local
 *.log
 .DS_Store
-data/raw/
+**/data/raw/
 coverage/
