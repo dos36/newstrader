@@ -1,18 +1,45 @@
-import { attachItemToCluster } from '@newstrader/db';
+import { attachItemToCluster, loadResolverDictionary } from '@newstrader/db';
+import type { Db, ResolverDictionary } from '@newstrader/db';
 import type { SQSBatchItemFailure, SQSBatchResponse, SQSEvent } from 'aws-lambda';
 import { lambdaDb } from './lib/boot.js';
-import { loadItemsByIds, parseRawItemRecord } from './lib/ingest.js';
+import { loadItemsByIds, parseRawItemRecord, resolveProcessItem } from './lib/ingest.js';
 
 /**
  * Process Lambda (q-items → here, batch 5, ReportBatchItemFailures enabled).
- * M0 scope: dedup/cluster only — resolve/interpret/decide arrive with M1+.
+ * M1 scope: dedup/cluster, then deterministic entity resolution — each item is
+ * attached to its story cluster and linked to instruments via the dictionary
+ * matcher (interpret/decide arrive with M2+).
  *
  * Idempotency comes from Postgres (attach is advisory-locked and treats
- * redelivery as a no-op), so at-least-once SQS delivery is safe. Unparseable
- * bodies are poison pills: reported as item failures so the redrive policy
- * moves them to the DLQ after maxReceiveCount — never retried past that
- * (architecture §4.2/§4.3).
+ * redelivery as a no-op; link inserts are conflict-do-nothing on their PK), so
+ * at-least-once SQS delivery is safe. Unparseable bodies are poison pills:
+ * reported as item failures so the redrive policy moves them to the DLQ after
+ * maxReceiveCount — never retried past that (architecture §4.2/§4.3).
  */
+
+/**
+ * Memoize the resolver dictionary across warm invocations, like lambdaDb, but
+ * with a TTL: universe:sync changes instruments/aliases out-of-band, and a
+ * warm container must pick that up without a redeploy. 5 minutes staleness is
+ * tolerable, with one honest caveat: items missed during the window stay
+ * unlinked until a `resolve` backfill sweep runs, and that sweep currently
+ * exists only as the manual CLI command — the deployed stack has no scheduled
+ * resolve job yet (tracked for the deployment milestone alongside a scheduled
+ * universe:sync).
+ */
+const DICTIONARY_TTL_MS = 5 * 60_000;
+let dictionaryCache: { dictionary: ResolverDictionary; expiresAt: number } | undefined;
+
+async function lambdaDictionary(db: Db): Promise<ResolverDictionary> {
+  const now = Date.now();
+  if (dictionaryCache !== undefined && now < dictionaryCache.expiresAt) {
+    return dictionaryCache.dictionary;
+  }
+  const dictionary = await loadResolverDictionary(db);
+  dictionaryCache = { dictionary, expiresAt: now + DICTIONARY_TTL_MS };
+  return dictionary;
+}
+
 export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
   const db = await lambdaDb();
 
@@ -39,6 +66,7 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
         throw new Error(`raw_news_items row ${message.itemId} not found`);
       }
       const result = await attachItemToCluster(db, item);
+      const resolution = await resolveProcessItem(db, item, await lambdaDictionary(db));
       console.log(
         JSON.stringify({
           level: 'info',
@@ -48,6 +76,8 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
           clusterId: result.clusterId,
           newCluster: result.isNew,
           similarity: result.similarity,
+          links: resolution.links.length,
+          linksWritten: resolution.linksWritten,
         }),
       );
     } catch (error) {

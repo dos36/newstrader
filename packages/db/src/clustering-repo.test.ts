@@ -4,11 +4,17 @@
  *
  * Run:
  *   docker compose up -d postgres
- *   DATABASE_URL=postgres://newstrader:newstrader@localhost:5433/newstrader pnpm db:migrate
  *   TEST_DATABASE_URL=postgres://newstrader:newstrader@localhost:5433/newstrader pnpm vitest run packages/db
  *
- * (beforeAll also applies migrations itself, so the db:migrate step is
- * belt-and-suspenders when pointing at a fresh database.)
+ * Isolation: the suite creates and migrates its OWN database
+ * (<dbname>_clustering_repo) and never writes to the shared TEST_DATABASE_URL
+ * database. That database holds real dev data, and this suite is unsafe
+ * against it three ways: beforeEach resets whole tables, closeStaleClusters
+ * mutates every stale cluster globally, and several assertions count whole
+ * tables. A previous revision ran directly against it — wiping real rows and
+ * leaking 'rss_wire' fixture rows into dev stats. afterAll re-empties the
+ * suite database so nothing persists between runs. Requires CREATEDB rights
+ * (the docker-compose superuser has them).
  */
 import { contentHash, newId } from '@newstrader/core';
 import { eq } from 'drizzle-orm';
@@ -34,21 +40,33 @@ describe.skipIf(!testDatabaseUrl)('clustering-repo (integration)', () => {
   let db: Db;
 
   beforeAll(async () => {
-    db = createDb(testDatabaseUrl);
+    if (testDatabaseUrl === undefined)
+      throw new Error('unreachable: suite is skipped without TEST_DATABASE_URL');
+    const suiteUrl = await createSuiteDatabase(testDatabaseUrl);
+    db = createDb(suiteUrl);
     await migrate(db, { migrationsFolder: new URL('../migrations', import.meta.url).pathname });
-  });
+  }, 60_000);
 
   afterAll(async () => {
-    await db.$client.end();
+    // Self-cleaning: the suite database is reused across runs — leave it empty.
+    try {
+      await wipeTables(db);
+    } finally {
+      await db.$client.end();
+    }
   });
 
   beforeEach(async () => {
-    // FK order: memberships -> clusters -> items -> sources.
-    await db.delete(newsClusterItems);
-    await db.delete(newsClusters);
-    await db.delete(rawNewsItems);
-    await db.delete(newsSources);
+    await wipeTables(db);
   });
+
+  /** FK-safe wipe, in dependency order: memberships → clusters → items → sources. */
+  async function wipeTables(target: Db): Promise<void> {
+    await target.delete(newsClusterItems);
+    await target.delete(newsClusters);
+    await target.delete(rawNewsItems);
+    await target.delete(newsSources);
+  }
 
   async function seedSource(sourceKey: string): Promise<string> {
     const id = newId();
@@ -271,3 +289,36 @@ describe.skipIf(!testDatabaseUrl)('clustering-repo (integration)', () => {
     expect(revived.clusterId).not.toBe(staleResult.clusterId);
   });
 });
+
+// ------------------------------------------------------------------ helpers --
+
+/**
+ * Create (if missing) the suite's dedicated database next to the shared
+ * TEST_DATABASE_URL one and return its URL. Idempotent across runs; mirrors
+ * services/cli/src/e2e.test.ts (<dbname>_cli_e2e).
+ */
+async function createSuiteDatabase(adminUrl: string): Promise<string> {
+  const parsed = new URL(adminUrl);
+  const baseName = parsed.pathname.replace(/^\//, '') || 'postgres';
+  const suiteName = `${baseName}_clustering_repo`.replace(/[^a-zA-Z0-9_]/g, '_');
+
+  const admin = createDb(adminUrl);
+  try {
+    await admin.$client.query(`create database "${suiteName}"`);
+  } catch (error) {
+    if (!isDuplicateDatabase(error)) throw error;
+  } finally {
+    await admin.$client.end();
+  }
+
+  const suiteUrl = new URL(adminUrl);
+  suiteUrl.pathname = `/${suiteName}`;
+  return suiteUrl.toString();
+}
+
+/** Postgres error 42P04: duplicate_database — the suite database already exists. */
+function isDuplicateDatabase(error: unknown): boolean {
+  return (
+    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === '42P04'
+  );
+}

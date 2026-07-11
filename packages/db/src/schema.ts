@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
@@ -137,7 +138,16 @@ export const indexMembership = pgTable(
     /** NULL = currently a member. */
     validTo: tz('valid_to'),
   },
-  (t) => [primaryKey({ columns: [t.instrumentId, t.indexCode, t.validFrom] })],
+  (t) => [
+    primaryKey({ columns: [t.instrumentId, t.indexCode, t.validFrom] }),
+    // At most ONE open row per (instrument, index) — a duplicate open row means
+    // point-in-time queries double-count and the sync diff is broken. A CHECK
+    // (valid_to > valid_from) rides in the same migration; drizzle can't
+    // express it, but a test-clock incident once wrote inverted intervals.
+    uniqueIndex('membership_open_uq')
+      .on(t.instrumentId, t.indexCode)
+      .where(sql`valid_to is null`),
+  ],
 );
 
 /** Point-in-time aliases — tickers and names get reused. */

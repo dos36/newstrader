@@ -22,8 +22,5 @@
   "dc:publisher": "GlobeNewswire Inc.",
   "dc:contributor": "Burtech Acquisition Corp II",
   "dc:modified": "Fri, 10 Jul 2026 21:26 GMT",
-  "dc:subject": [
-    "Press releases",
-    "Company Announcement"
-  ]
+  "dc:subject": ["Press releases", "Company Announcement"]
 }

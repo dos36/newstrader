@@ -2,8 +2,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { allAdapters, FsRawStore } from '@newstrader/adapters';
 import type { RawStore, SourceAdapter } from '@newstrader/core';
-import { closeStaleClusters, createDb } from '@newstrader/db';
-import type { Db } from '@newstrader/db';
+import {
+  closeStaleClusters,
+  createDb,
+  fetchSecTickerMap,
+  fetchSp500FromWikipedia,
+  loadResolverDictionary,
+  resolveUnlinkedItems,
+  syncUniverse,
+} from '@newstrader/db';
+import type { Db, ResolveCursor } from '@newstrader/db';
 import { Command } from 'commander';
 import dotenv from 'dotenv';
 import {
@@ -15,9 +23,12 @@ import {
 import { printStats } from './stats.js';
 
 /**
- * NewsTrader milestone-0 CLI: run the same ingest core the Lambdas run, but
+ * NewsTrader milestone-0/1 CLI: run the same ingest core the Lambdas run, but
  * locally — FsRawStore instead of S3, a direct DATABASE_URL instead of the
  * Secrets Manager secret, and `process` finds work by query instead of SQS.
+ * M1 adds the universe/dictionary layer: `universe:sync` maintains
+ * instruments/membership/aliases, `process` resolves items as it clusters
+ * them, and `resolve` backfills items ingested before the dictionary existed.
  * Config comes from .env via dotenv (see .env.example).
  */
 
@@ -91,23 +102,104 @@ program
   .action(async (options: { batch: string }) => {
     const batchSize = parsePositiveInt(options.batch, '--batch');
     await withDb(async (db) => {
-      const totals = { processed: 0, newClusters: 0, attachedExisting: 0 };
+      // One dictionary snapshot for the whole run — items arriving mid-run
+      // are resolved against it; the next run (or `resolve`) picks up any
+      // universe changes made meanwhile.
+      const dictionary = await loadResolverDictionary(db);
+      const totals = {
+        processed: 0,
+        newClusters: 0,
+        attachedExisting: 0,
+        itemsLinked: 0,
+        linksWritten: 0,
+      };
       for (;;) {
         const items = await loadUnclusteredItems(db, batchSize);
         if (items.length === 0) break;
-        const counts = await runProcess(db, items);
+        const counts = await runProcess(db, items, dictionary);
         totals.processed += counts.processed;
         totals.newClusters += counts.newClusters;
         totals.attachedExisting += counts.attachedExisting;
+        totals.itemsLinked += counts.itemsLinked;
+        totals.linksWritten += counts.linksWritten;
         console.log(
           `[process] batch: processed=${counts.processed} newClusters=${counts.newClusters} ` +
-            `attachedExisting=${counts.attachedExisting}`,
+            `attachedExisting=${counts.attachedExisting} itemsLinked=${counts.itemsLinked} ` +
+            `linksWritten=${counts.linksWritten}`,
         );
       }
       const closed = await closeStaleClusters(db);
       console.log(
         `[process] done: processed=${totals.processed} newClusters=${totals.newClusters} ` +
-          `attachedExisting=${totals.attachedExisting} staleClustersClosed=${closed}`,
+          `attachedExisting=${totals.attachedExisting} itemsLinked=${totals.itemsLinked} ` +
+          `linksWritten=${totals.linksWritten} staleClustersClosed=${closed}`,
+      );
+    });
+  });
+
+program
+  .command('universe:sync')
+  .description(
+    'Sync the instrument universe: S&P 500 from Wikipedia (CIKs cross-checked against SEC), ' +
+      'SPX point-in-time membership diff, crypto seeds, and the alias dictionary. ' +
+      'Requires EDGAR_USER_AGENT (SEC rejects anonymous clients).',
+  )
+  .action(async () => {
+    const userAgent = process.env['EDGAR_USER_AGENT'];
+    await withDb(async (db) => {
+      const counts = await syncUniverse(db, {
+        fetchSp500: () => fetchSp500FromWikipedia({ userAgent }),
+        fetchSecTickers: () => fetchSecTickerMap({ userAgent }),
+      });
+      console.table([
+        {
+          equities: counts.equities,
+          'crypto seeded': counts.cryptoSeeded,
+          'members added': counts.membersAdded,
+          'members closed': counts.membersClosed,
+          'aliases inserted': counts.aliasesInserted,
+          'aliases closed': counts.aliasesClosed,
+        },
+      ]);
+    });
+  });
+
+program
+  .command('resolve')
+  .option('--batch <n>', 'items per resolution batch', '500')
+  .description(
+    'Backfill entity resolution: link every unlinked raw item to instruments via the ' +
+      'dictionary matcher (r1). `process` resolves new items inline; this catches items ' +
+      'ingested before the dictionary knew their instruments.',
+  )
+  .action(async (options: { batch: string }) => {
+    const batchSize = parsePositiveInt(options.batch, '--batch');
+    await withDb(async (db) => {
+      const totals = { passes: 0, processed: 0, linked: 0, linksWritten: 0 };
+      // One full sweep over every unlinked item: the keyset cursor (lastKey →
+      // after) advances past unresolvable items too, so a head-of-queue block
+      // of never-resolvable items (the majority class: non-S&P filings) cannot
+      // starve the sweep. Drained when a pass examined fewer than a full batch.
+      let after: ResolveCursor | undefined;
+      for (;;) {
+        const counts = await resolveUnlinkedItems(db, {
+          batch: batchSize,
+          ...(after !== undefined ? { after } : {}),
+        });
+        totals.passes += 1;
+        totals.processed += counts.processed;
+        totals.linked += counts.linked;
+        totals.linksWritten += counts.linksWritten;
+        console.log(
+          `[resolve] batch: processed=${counts.processed} linked=${counts.linked} ` +
+            `linksWritten=${counts.linksWritten}`,
+        );
+        if (counts.processed < batchSize || counts.lastKey === null) break;
+        after = counts.lastKey;
+      }
+      console.log(
+        `[resolve] done: passes=${totals.passes} itemsExamined=${totals.processed} ` +
+          `linked=${totals.linked} linksWritten=${totals.linksWritten}`,
       );
     });
   });

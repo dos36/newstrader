@@ -26,8 +26,5 @@
   "dc:publisher": "GlobeNewswire Inc.",
   "dc:contributor": "Fobi AI Inc.",
   "dc:modified": "Fri, 10 Jul 2026 22:17 GMT",
-  "dc:subject": [
-    "Company Announcement",
-    "Press releases"
-  ]
+  "dc:subject": ["Company Announcement", "Press releases"]
 }

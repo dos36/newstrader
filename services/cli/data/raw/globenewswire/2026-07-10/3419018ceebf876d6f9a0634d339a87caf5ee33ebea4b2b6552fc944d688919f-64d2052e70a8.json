@@ -22,9 +22,5 @@
   "dc:publisher": "GlobeNewswire Inc.",
   "dc:contributor": "TOP Financial Group Limited",
   "dc:modified": "Fri, 10 Jul 2026 21:00 GMT",
-  "dc:subject": [
-    "Press releases",
-    "Company Announcement",
-    "Equity Market Information"
-  ]
+  "dc:subject": ["Press releases", "Company Announcement", "Equity Market Information"]
 }

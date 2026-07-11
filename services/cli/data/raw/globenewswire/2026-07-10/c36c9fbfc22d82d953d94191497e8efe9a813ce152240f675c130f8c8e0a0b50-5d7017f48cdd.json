@@ -30,8 +30,5 @@
   "dc:publisher": "GlobeNewswire Inc.",
   "dc:contributor": "B2Gold Corp.",
   "dc:modified": "Fri, 10 Jul 2026 21:00 GMT",
-  "dc:subject": [
-    "Calendar of Events",
-    "Conference Calls/ Webcasts"
-  ]
+  "dc:subject": ["Calendar of Events", "Conference Calls/ Webcasts"]
 }

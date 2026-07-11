@@ -1,8 +1,15 @@
 import { rawStoreKey } from '@newstrader/adapters';
 import { contentHash, newId, RawItemV1 } from '@newstrader/core';
 import type { RawStore, SourceAdapter } from '@newstrader/core';
-import { attachItemToCluster, ingestWatermarks, newsSources, rawNewsItems } from '@newstrader/db';
-import type { AttachItemInput, Db } from '@newstrader/db';
+import {
+  attachItemToCluster,
+  ingestWatermarks,
+  newsSources,
+  persistLinks,
+  rawNewsItems,
+  resolveItem,
+} from '@newstrader/db';
+import type { AttachItemInput, Db, ResolvedLink, ResolverDictionary } from '@newstrader/db';
 
 /**
  * Shared ingest core: the poll and process pipelines, callable from both the
@@ -49,10 +56,21 @@ export interface PollCounts {
   cursor: string | null;
 }
 
+/** What the process stage needs per item: clustering fields + the resolver's
+ * inputs (symbols_hint and meta ride along from raw_news_items). */
+export interface ProcessItemInput extends AttachItemInput {
+  symbolsHint: string[];
+  meta: Record<string, unknown>;
+}
+
 export interface ProcessCounts {
   processed: number;
   newClusters: number;
   attachedExisting: number;
+  /** Items that resolved to at least one instrument. */
+  itemsLinked: number;
+  /** item_instrument_links rows actually inserted (0 on pure redelivery). */
+  linksWritten: number;
 }
 
 /**
@@ -158,22 +176,59 @@ export async function runPoll(deps: IngestDeps, adapter: SourceAdapter): Promise
 }
 
 /**
- * Cluster a batch of persisted raw items. Attach is idempotent (advisory-locked
- * in packages/db), so redelivered batches are safe: they count as
- * attachedExisting and change nothing.
+ * Cluster + resolve a batch of persisted raw items (M1: entity resolution runs
+ * right after the cluster attach). Both halves are idempotent — attach is
+ * advisory-locked and persistLinks is conflict-do-nothing on its PK — so
+ * redelivered batches are safe: they count as attachedExisting, write no new
+ * links, and change nothing.
+ *
+ * The caller supplies the resolver dictionary: the CLI loads it once per
+ * `process` run, the Lambda memoizes it with a TTL (see process.ts).
  */
 export async function runProcess(
   db: Db,
-  items: readonly AttachItemInput[],
+  items: readonly ProcessItemInput[],
+  dictionary: ResolverDictionary,
 ): Promise<ProcessCounts> {
   let newClusters = 0;
   let attachedExisting = 0;
+  let itemsLinked = 0;
+  let linksWritten = 0;
   for (const item of items) {
     const result = await attachItemToCluster(db, item);
     if (result.isNew) newClusters += 1;
     else attachedExisting += 1;
+    const resolution = await resolveProcessItem(db, item, dictionary);
+    if (resolution.links.length > 0) itemsLinked += 1;
+    linksWritten += resolution.linksWritten;
   }
-  return { processed: items.length, newClusters, attachedExisting };
+  return { processed: items.length, newClusters, attachedExisting, itemsLinked, linksWritten };
+}
+
+export interface ItemResolution {
+  /** What the matcher decided (also returned when every row already existed). */
+  links: ResolvedLink[];
+  /** Rows actually inserted — 0 when the item was already resolved (redelivery). */
+  linksWritten: number;
+}
+
+/**
+ * Resolve one item against the dictionary and persist the links. The DB row
+ * carries only the headline (bodies live in the raw store), so the matcher
+ * runs on headline + symbolsHint + meta — the same inputs the batch
+ * resolveUnlinkedItems backfill uses.
+ */
+export async function resolveProcessItem(
+  db: Db,
+  item: ProcessItemInput,
+  dictionary: ResolverDictionary,
+): Promise<ItemResolution> {
+  const links = resolveItem(
+    { headline: item.headline, symbolsHint: item.symbolsHint, meta: item.meta },
+    dictionary,
+  );
+  const linksWritten = links.length === 0 ? 0 : await persistLinks(db, item.id, links);
+  return { links, linksWritten };
 }
 
 /**
@@ -200,28 +255,30 @@ export async function ensureSource(db: Db, adapter: SourceAdapter): Promise<stri
 }
 
 /** Raw items not yet attached to any cluster, oldest first (received_at, then id). */
-export async function loadUnclusteredItems(db: Db, limit: number): Promise<AttachItemInput[]> {
-  const result = await db.$client.query<AttachRow>(
-    `select r.id, r.source_id, r.headline, r.content_hash, r.received_at
+export async function loadUnclusteredItems(db: Db, limit: number): Promise<ProcessItemInput[]> {
+  const result = await db.$client.query<ProcessRow>(
+    `select r.id, r.source_id, r.headline, r.content_hash, r.received_at,
+            r.symbols_hint, r.meta
        from raw_news_items r
       where not exists (select 1 from news_cluster_items ci where ci.item_id = r.id)
       order by r.received_at asc, r.id asc
       limit $1`,
     [limit],
   );
-  return result.rows.map(toAttachInput);
+  return result.rows.map(toProcessInput);
 }
 
-/** Load attach inputs for specific raw item ids (process Lambda path). */
-export async function loadItemsByIds(db: Db, ids: readonly string[]): Promise<AttachItemInput[]> {
+/** Load process inputs for specific raw item ids (process Lambda path). */
+export async function loadItemsByIds(db: Db, ids: readonly string[]): Promise<ProcessItemInput[]> {
   if (ids.length === 0) return [];
-  const result = await db.$client.query<AttachRow>(
-    `select r.id, r.source_id, r.headline, r.content_hash, r.received_at
+  const result = await db.$client.query<ProcessRow>(
+    `select r.id, r.source_id, r.headline, r.content_hash, r.received_at,
+            r.symbols_hint, r.meta
        from raw_news_items r
       where r.id = any($1)`,
     [ids],
   );
-  return result.rows.map(toAttachInput);
+  return result.rows.map(toProcessInput);
 }
 
 /** Parse an SQS message body as a RawItemV1 pointer; null = poison pill. */
@@ -259,6 +316,11 @@ type AttachRow = {
   headline: string;
   content_hash: string;
   received_at: Date;
+};
+
+type ProcessRow = AttachRow & {
+  symbols_hint: string[];
+  meta: Record<string, unknown>;
 };
 
 type RawItemRow = AttachRow & {
@@ -308,13 +370,15 @@ function rawItemV1FromRow(sourceKey: string, row: RawItemRow): RawItemV1 {
   };
 }
 
-function toAttachInput(row: AttachRow): AttachItemInput {
+function toProcessInput(row: ProcessRow): ProcessItemInput {
   return {
     id: row.id,
     sourceId: row.source_id,
     headline: row.headline,
     contentHash: row.content_hash,
     receivedAt: row.received_at,
+    symbolsHint: row.symbols_hint,
+    meta: row.meta,
   };
 }
 

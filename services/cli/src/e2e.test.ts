@@ -8,13 +8,21 @@ import type {
   RawStore,
   SourceAdapter,
 } from '@newstrader/core';
+import { newId } from '@newstrader/core';
 import {
+  CONFIDENCE,
   createDb,
+  indexMembership,
   ingestWatermarks,
+  instrumentAliases,
+  instruments,
+  itemInstrumentLinks,
+  loadResolverDictionary,
   newsClusterItems,
   newsClusters,
   newsSources,
   rawNewsItems,
+  RESOLVER_VERSION,
 } from '@newstrader/db';
 import type { Db } from '@newstrader/db';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -31,10 +39,14 @@ import {
  * advisory-locked attach). Skipped without TEST_DATABASE_URL.
  *
  * Isolation: this file creates and migrates its OWN database
- * (<dbname>_cli_e2e, via `pnpm --filter @newstrader/db migrate`) because
- * packages/db/src/clustering-repo.test.ts truncates every table in the shared
- * TEST_DATABASE_URL database and vitest runs files in parallel — sharing it
- * would race. Requires CREATEDB rights (the docker-compose superuser has them).
+ * (<dbname>_cli_e2e, via `pnpm --filter @newstrader/db migrate`) because DB
+ * suites reset whole tables between tests and vitest runs files in parallel —
+ * packages/db/src/clustering-repo.test.ts isolates the same way. The shared
+ * TEST_DATABASE_URL database holds real dev data; the only writes this suite
+ * ever performs there are the scoped deletes in scrubFixtureSourceLeftovers,
+ * which remove fixture rows leaked by prior test revisions. afterAll re-empties
+ * the e2e tables so nothing persists between runs. Requires CREATEDB rights
+ * (the docker-compose superuser has them).
  */
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -66,6 +78,13 @@ const STORY_B: FetchedItem = {
   externalId: 'wire-002',
   headline: 'Globex Industries recalls smart thermostats over fire risk',
   raw: { fixture: 'wire-002' },
+};
+
+/** Exchange-prefix form in the headline — the ticker_exact resolution channel. */
+const STORY_D: FetchedItem = {
+  externalId: 'wire-004',
+  headline: 'Globex Industries (NYSE: GLBX) expands smart thermostat recall to Europe',
+  raw: { fixture: 'wire-004' },
 };
 
 class FakeAdapter implements SourceAdapter {
@@ -107,22 +126,23 @@ describe.skipIf(!testDatabaseUrl)('ingest e2e: fixtures → poll → process →
   beforeAll(async () => {
     if (testDatabaseUrl === undefined)
       throw new Error('unreachable: suite is skipped without TEST_DATABASE_URL');
+    await scrubFixtureSourceLeftovers(testDatabaseUrl);
     const e2eUrl = await createE2eDatabase(testDatabaseUrl);
     migrateDatabase(e2eUrl);
     db = createDb(e2eUrl);
   }, 120_000);
 
   afterAll(async () => {
-    await db.$client.end();
+    // Self-cleaning: the e2e database is reused across runs — leave it empty.
+    try {
+      await wipeIngestTables(db);
+    } finally {
+      await db.$client.end();
+    }
   });
 
   beforeEach(async () => {
-    // FK order: memberships → clusters, watermarks/items → sources.
-    await db.delete(newsClusterItems);
-    await db.delete(newsClusters);
-    await db.delete(ingestWatermarks);
-    await db.delete(rawNewsItems);
-    await db.delete(newsSources);
+    await wipeIngestTables(db);
   });
 
   function fixtureWorld() {
@@ -190,8 +210,15 @@ describe.skipIf(!testDatabaseUrl)('ingest e2e: fixtures → poll → process →
       STORY_A_ECHO.headline,
     ]);
 
-    const counts = await runProcess(db, unclustered);
-    expect(counts).toEqual({ processed: 3, newClusters: 2, attachedExisting: 1 });
+    // Empty dictionary (no instruments seeded): clustering proceeds, no links.
+    const counts = await runProcess(db, unclustered, await loadResolverDictionary(db));
+    expect(counts).toEqual({
+      processed: 3,
+      newClusters: 2,
+      attachedExisting: 1,
+      itemsLinked: 0,
+      linksWritten: 0,
+    });
 
     const clusters = await db.select().from(newsClusters);
     expect(clusters).toHaveLength(2);
@@ -212,7 +239,8 @@ describe.skipIf(!testDatabaseUrl)('ingest e2e: fixtures → poll → process →
     // First full pass.
     await runPoll(deps, wire);
     await runPoll(deps, echo);
-    await runProcess(db, await loadUnclusteredItems(db, 500));
+    const dictionary = await loadResolverDictionary(db);
+    await runProcess(db, await loadUnclusteredItems(db, 500), dictionary);
 
     // --- redelivered poll (same items fetched again) --------------------------
     const wireAgain = await runPoll(deps, wire);
@@ -235,8 +263,14 @@ describe.skipIf(!testDatabaseUrl)('ingest e2e: fixtures → poll → process →
       queue.map((m) => m.itemId),
     );
     expect(redelivered).toHaveLength(3);
-    const counts = await runProcess(db, redelivered);
-    expect(counts).toEqual({ processed: 3, newClusters: 0, attachedExisting: 3 });
+    const counts = await runProcess(db, redelivered, dictionary);
+    expect(counts).toEqual({
+      processed: 3,
+      newClusters: 0,
+      attachedExisting: 3,
+      itemsLinked: 0,
+      linksWritten: 0,
+    });
 
     // DB state is bit-for-bit the same story: 2 clusters, 3 memberships,
     // counters untouched.
@@ -248,9 +282,150 @@ describe.skipIf(!testDatabaseUrl)('ingest e2e: fixtures → poll → process →
     expect(shared.distinctSourceCount).toBe(2);
     expect(shared.firstReceivedAt).toEqual(T0);
   });
+
+  it('resolves items to seeded instruments during process (source_hint + ticker_exact)', async () => {
+    // Seed a 2-instrument universe: ACME resolves STORY_A_WIRE via its
+    // symbolsHint (['ACME']); GLBX resolves STORY_D via the "(NYSE: GLBX)"
+    // exchange-prefix in the headline. The GLBX name alias also hits STORY_D's
+    // headline (alias_dict 0.7) — the resolver must keep only the
+    // higher-confidence ticker_exact link per instrument.
+    const acmeId = newId();
+    const glbxId = newId();
+    await db.insert(instruments).values([
+      { id: acmeId, symbol: 'ACME', assetClass: 'us_equity', name: 'Acme Corp' },
+      { id: glbxId, symbol: 'GLBX', assetClass: 'us_equity', name: 'Globex Industries' },
+    ]);
+    await db.insert(instrumentAliases).values([
+      {
+        instrumentId: glbxId,
+        alias: 'Globex Industries',
+        aliasKind: 'name',
+        validFrom: new Date('2020-01-01T00:00:00.000Z'),
+      },
+    ]);
+
+    const wire = new FakeAdapter('fake_wire', [STORY_A_WIRE, STORY_D]);
+    const { deps } = fixtureWorld();
+    await runPoll(deps, wire);
+
+    const items = await loadUnclusteredItems(db, 500);
+    expect(items).toHaveLength(2);
+    const counts = await runProcess(db, items, await loadResolverDictionary(db));
+    expect(counts).toMatchObject({ processed: 2, itemsLinked: 2, linksWritten: 2 });
+
+    const links = await db.select().from(itemInstrumentLinks);
+    expect(links).toHaveLength(2);
+
+    const byInstrument = new Map(links.map((link) => [link.instrumentId, link]));
+    const rawRows = await db.select().from(rawNewsItems);
+    const acmeItem = rawRows.find((row) => row.externalId === STORY_A_WIRE.externalId);
+    const glbxItem = rawRows.find((row) => row.externalId === STORY_D.externalId);
+
+    expect(byInstrument.get(acmeId)).toMatchObject({
+      itemId: acmeItem?.id,
+      method: 'source_hint',
+      confidence: CONFIDENCE.sourceHint,
+      resolverVersion: RESOLVER_VERSION,
+    });
+    expect(byInstrument.get(glbxId)).toMatchObject({
+      itemId: glbxItem?.id,
+      method: 'ticker_exact',
+      confidence: CONFIDENCE.exchangePrefix,
+      resolverVersion: RESOLVER_VERSION,
+    });
+
+    // Redelivered process batch: attach and links are both no-ops.
+    const again = await runProcess(db, items, await loadResolverDictionary(db));
+    expect(again).toMatchObject({ processed: 2, itemsLinked: 2, linksWritten: 0 });
+    expect(await db.select().from(itemInstrumentLinks)).toHaveLength(2);
+  });
 });
 
 // ------------------------------------------------------------------ helpers --
+
+/**
+ * FK-safe wipe of every table the ingest pipeline writes or the tests seed,
+ * in dependency order: memberships → clusters → instrument links → raw items
+ * → watermarks → sources, then the universe tables (aliases and index
+ * membership before the instruments they reference). Only ever pointed at
+ * this suite's dedicated e2e database.
+ */
+async function wipeIngestTables(db: Db): Promise<void> {
+  await db.delete(newsClusterItems);
+  await db.delete(newsClusters);
+  await db.delete(itemInstrumentLinks);
+  await db.delete(rawNewsItems);
+  await db.delete(ingestWatermarks);
+  await db.delete(newsSources);
+  await db.delete(instrumentAliases);
+  await db.delete(indexMembership);
+  await db.delete(instruments);
+}
+
+/**
+ * Source keys only the DB test suites ever write — real adapters use keys like
+ * edgar_8k / massive_news (see packages/adapters). Prior revisions of the DB
+ * suites ran straight against the shared TEST_DATABASE_URL database and left
+ * these fixture rows behind in real dev data.
+ */
+const FIXTURE_SOURCE_KEYS = ['rss_wire', 'rss_echo', 'fake_wire', 'fake_echo'];
+
+/**
+ * Idempotently delete leftover fixture-source rows from the SHARED
+ * TEST_DATABASE_URL database. Strictly scoped by source_key so real dev rows
+ * are never touched. FK-safe order: memberships → clusters → instrument links
+ * → raw items → watermarks → sources. A cluster anchored (first_item_id) on a
+ * fixture item is removed with ALL its memberships — later real items may have
+ * joined it and become orphan members; a fixture membership inside a cluster
+ * anchored elsewhere is removed alone, leaving the cluster in place.
+ */
+async function scrubFixtureSourceLeftovers(sharedDatabaseUrl: string): Promise<void> {
+  const shared = createDb(sharedDatabaseUrl);
+  try {
+    const sources = await shared.$client.query<{ id: string }>(
+      'select id from news_sources where source_key = any($1)',
+      [FIXTURE_SOURCE_KEYS],
+    );
+    const sourceIds = sources.rows.map((row) => row.id);
+    if (sourceIds.length === 0) return;
+
+    const items = await shared.$client.query<{ id: string }>(
+      'select id from raw_news_items where source_id = any($1)',
+      [sourceIds],
+    );
+    const itemIds = items.rows.map((row) => row.id);
+    const anchored = await shared.$client.query<{ id: string }>(
+      'select id from news_clusters where first_item_id = any($1)',
+      [itemIds],
+    );
+    const clusterIds = anchored.rows.map((row) => row.id);
+
+    await shared.$client.query(
+      'delete from news_cluster_items where item_id = any($1) or cluster_id = any($2)',
+      [itemIds, clusterIds],
+    );
+    await shared.$client.query('delete from news_clusters where id = any($1)', [clusterIds]);
+    await shared.$client.query('delete from item_instrument_links where item_id = any($1)', [
+      itemIds,
+    ]);
+    await shared.$client.query('delete from raw_news_items where id = any($1)', [itemIds]);
+    await shared.$client.query('delete from ingest_watermarks where source_id = any($1)', [
+      sourceIds,
+    ]);
+    await shared.$client.query('delete from news_sources where id = any($1)', [sourceIds]);
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        msg: 'e2e.scrubbed_fixture_leftovers',
+        sources: sourceIds.length,
+        items: itemIds.length,
+        clusters: clusterIds.length,
+      }),
+    );
+  } finally {
+    await shared.$client.end();
+  }
+}
 
 async function createE2eDatabase(adminUrl: string): Promise<string> {
   const parsed = new URL(adminUrl);
