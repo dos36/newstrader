@@ -1,0 +1,23 @@
+{
+  "title": "8-K - Kinetic Seas Inc. (0001945619) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1945619/000168316826005460/0001683168-26-005460-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001683168-26-005460 <b>Size:</b> 188 KB\n<br>Item 5.02: Departure of Directors or Certain Officers; Election of Directors; Appointment of Certain Officers: Compensatory Arrangements of Certain Officers\n<br>Item 9.01: Financial Statements and Exhibits",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T17:05:51-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001683168-26-005460"
+}

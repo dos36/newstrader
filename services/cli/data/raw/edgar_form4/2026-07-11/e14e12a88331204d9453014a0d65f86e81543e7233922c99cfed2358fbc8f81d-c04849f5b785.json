@@ -1,0 +1,23 @@
+{
+  "title": "4 - Lionsgate Studios Corp. (0002052959) (Issuer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/2052959/000119312526301179/0001193125-26-301179-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001193125-26-301179 <b>Size:</b> 45 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T20:00:03-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001193125-26-301179"
+}

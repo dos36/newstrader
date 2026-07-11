@@ -1,0 +1,23 @@
+{
+  "title": "4 - Marks Gilbert Lynn (0001916940) (Reporting)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1916940/000119312526301166/0001193125-26-301166-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001193125-26-301166 <b>Size:</b> 4 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T19:41:06-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001193125-26-301166"
+}

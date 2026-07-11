@@ -1,0 +1,23 @@
+{
+  "title": "4 - Health In Tech, Inc. (0002019505) (Issuer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/2019505/000121390026077302/0001213900-26-077302-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001213900-26-077302 <b>Size:</b> 12 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T18:46:01-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001213900-26-077302"
+}

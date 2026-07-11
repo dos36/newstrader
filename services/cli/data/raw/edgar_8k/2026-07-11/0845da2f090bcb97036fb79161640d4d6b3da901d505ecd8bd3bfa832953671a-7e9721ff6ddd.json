@@ -1,0 +1,23 @@
+{
+  "title": "8-K - Freedom Holding Corp. (0000924805) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/924805/000092480526000026/0000924805-26-000026-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0000924805-26-000026 <b>Size:</b> 152 KB\n<br>Item 3.02: Unregistered Sales of Equity Securities\n<br>Item 7.01: Regulation FD Disclosure\n<br>Item 9.01: Financial Statements and Exhibits",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T16:10:57-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0000924805-26-000026"
+}

@@ -1,0 +1,23 @@
+{
+  "title": "8-K/A - I-ON Digital Corp. (0001580490) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1580490/000149315226032857/0001493152-26-032857-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001493152-26-032857 <b>Size:</b> 423 KB\n<br>Item 5.02: Departure of Directors or Certain Officers; Election of Directors; Appointment of Certain Officers: Compensatory Arrangements of Certain Officers\n<br>Item 9.01: Financial Statements and Exhibits",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T16:35:44-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K/A"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001493152-26-032857"
+}

@@ -1,0 +1,23 @@
+{
+  "title": "8-K - T Stamp Inc (0001718939) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1718939/000171893926000042/0001718939-26-000042-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001718939-26-000042 <b>Size:</b> 161 KB\n<br>Item 8.01: Other Events",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T16:25:28-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001718939-26-000042"
+}

@@ -1,0 +1,23 @@
+{
+  "title": "4 - Hayes Timothy (0002020283) (Reporting)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/2020283/000121390026077301/0001213900-26-077301-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001213900-26-077301 <b>Size:</b> 12 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T18:45:43-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001213900-26-077301"
+}

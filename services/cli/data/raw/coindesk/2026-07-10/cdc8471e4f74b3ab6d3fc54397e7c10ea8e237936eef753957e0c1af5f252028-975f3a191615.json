@@ -1,0 +1,35 @@
+{
+  "title": "With SEC fight over, Coinbase's top legal exec Grewal moves on, and others reassigned ",
+  "link": "https://www.coindesk.com/policy/2026/07/09/with-sec-fight-over-coinbase-s-top-legal-exec-grewal-moves-on-and-others-reassigned",
+  "media:content": {
+    "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/80e6ac6773d5aa941421ab35198c14438412acfb-2560x1440.jpg?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+    "@_type": "image/*",
+    "@_medium": "image"
+  },
+  "guid": {
+    "#text": "5fa59e3d-38b0-47db-9720-d32a5d5d0bac",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Thu, 09 Jul 2026 20:31:39 +0000",
+  "description": "Coinbase Chief Legal Officer Paul Grewal will depart the exchange, though he'll continue as an adviser, he said Thursday.",
+  "dc:creator": [
+    "Nikhilesh De",
+    "Jesse Hamilton"
+  ],
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "Policy",
+      "@_domain": "https://www.coindesk.com/policy"
+    },
+    {
+      "#text": "Coinbase",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "News",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

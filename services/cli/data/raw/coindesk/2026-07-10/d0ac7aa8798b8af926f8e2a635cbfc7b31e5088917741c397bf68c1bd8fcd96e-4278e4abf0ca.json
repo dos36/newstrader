@@ -1,0 +1,40 @@
+{
+  "title": "Metaplanet explores bringing bitcoin-backed digital credit to Japan",
+  "link": "https://www.coindesk.com/markets/2026/07/10/metaplanet-explores-bringing-bitcoin-backed-digital-credit-to-japan",
+  "media:content": {
+    "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/3ea648cf946f0b6bd658d99f67a6767d04b5becd-1200x800.jpg?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+    "@_type": "image/*",
+    "@_medium": "image"
+  },
+  "guid": {
+    "#text": "0921d5b4-105c-4306-8f9b-8ce9d0eaa49a",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Fri, 10 Jul 2026 09:08:20 +0000",
+  "description": "The bitcoin treasury company is working with JPYC and Progmat to explore tokenized credit products backed by bitcoin, aiming to create efficient, 24/7 credit markets in Japan. \n\n",
+  "dc:creator": "Omkar Godbole",
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "Markets",
+      "@_domain": "https://www.coindesk.com/markets"
+    },
+    {
+      "#text": "Bitcoin News",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "Japan",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "tokenized credit",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "News",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

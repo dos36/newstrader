@@ -1,0 +1,23 @@
+{
+  "title": "8-K - National Storage Affiliates Trust (0001618563) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1618563/000110465926082717/0001104659-26-082717-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001104659-26-082717 <b>Size:</b> 363 KB\n<br>Item 8.01: Other Events\n<br>Item 9.01: Financial Statements and Exhibits",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T17:12:07-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001104659-26-082717"
+}

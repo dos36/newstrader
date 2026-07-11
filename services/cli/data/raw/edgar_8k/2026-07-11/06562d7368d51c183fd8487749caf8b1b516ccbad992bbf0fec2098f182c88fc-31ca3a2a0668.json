@@ -1,0 +1,23 @@
+{
+  "title": "8-K - VSEE HEALTH, INC. (0001864531) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1864531/000118518526002887/0001185185-26-002887-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001185185-26-002887 <b>Size:</b> 240 KB\n<br>Item 5.08: Shareholder Nominations Pursuant to Exchange Act Rule 14a-11\n<br>Item 8.01: Other Events",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T16:31:04-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001185185-26-002887"
+}

@@ -1,0 +1,40 @@
+{
+  "title": "Circle soars after securing U.S. trust bank approval in crypto expansion",
+  "link": "https://www.coindesk.com/business/2026/07/10/circle-secures-u-s-trust-bank-approval-in-crypto-expansion",
+  "media:content": {
+    "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/024ae1afdc1672e747814cc0546828b965ecf695-5162x3441.jpg?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+    "@_type": "image/*",
+    "@_medium": "image"
+  },
+  "guid": {
+    "#text": "c947a278-ded3-4e4a-9791-605c0cac70cd",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Fri, 10 Jul 2026 11:41:47 +0000",
+  "description": "The approval adds to a growing list of crypto firms seeking federal banking licenses as the industry moves into the regulated financial system.",
+  "dc:creator": "Olivier Acuna",
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "Finance",
+      "@_domain": "https://www.coindesk.com/business"
+    },
+    {
+      "#text": "Circle",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "Stablecoins",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "banks",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "News",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

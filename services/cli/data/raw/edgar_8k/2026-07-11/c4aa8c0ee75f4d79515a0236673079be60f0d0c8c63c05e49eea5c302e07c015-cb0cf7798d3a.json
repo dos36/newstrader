@@ -1,0 +1,23 @@
+{
+  "title": "8-K - Nuveen Churchill Direct Lending Corp. (0001737924) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1737924/000173792426000079/0001737924-26-000079-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001737924-26-000079 <b>Size:</b> 673 KB\n<br>Item 1.01: Entry into a Material Definitive Agreement\n<br>Item 2.03: Creation of a Direct Financial Obligation or an Obligation under an Off-Balance Sheet Arrangement of a Registrant\n<br>Item 9.01: Financial Statements and Exhibits",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T16:30:54-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001737924-26-000079"
+}

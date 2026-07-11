@@ -1,0 +1,23 @@
+{
+  "title": "4 - Garzone Pamela (0001974756) (Reporting)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1974756/000197475626000004/0001974756-26-000004-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001974756-26-000004 <b>Size:</b> 5 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T19:37:59-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001974756-26-000004"
+}

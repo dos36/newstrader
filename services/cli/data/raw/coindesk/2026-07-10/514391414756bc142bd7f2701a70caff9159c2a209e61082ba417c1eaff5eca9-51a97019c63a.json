@@ -1,0 +1,40 @@
+{
+  "title": "Aave rolls out vaults for yield-hungry fintech investors",
+  "link": "https://www.coindesk.com/business/2026/07/09/aave-rolls-out-vaults-for-yield-hungry-fintech-investors",
+  "media:content": {
+    "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/36f114a53bbcdea37ae44f32f67ff528318e79c3-1280x960.jpg?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+    "@_type": "image/*",
+    "@_medium": "image"
+  },
+  "guid": {
+    "#text": "61944078-ec34-4f34-abde-df7f120e99e4",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Thu, 09 Jul 2026 13:01:38 +0000",
+  "description": "Aave's new Stable Vaults product lets wallets, exchanges and payment apps offer yields on stablecoin deposits ",
+  "dc:creator": "Krisztian Sandor",
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "Finance",
+      "@_domain": "https://www.coindesk.com/business"
+    },
+    {
+      "#text": "Aave",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "DeFi",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "Real World Assets  ",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "News",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

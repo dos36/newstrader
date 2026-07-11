@@ -1,0 +1,36 @@
+{
+  "title": "Bitcoin's quiet split: Strong in USD, lagging in JPY as Yen rises on intervention fears",
+  "link": "https://www.coindesk.com/markets/2026/07/10/bitcoin-s-quiet-split-strong-in-usd-lagging-in-jpy-as-yen-rises-on-intervention-fears",
+  "media:content": {
+    "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/3c086f61e9c97a87a590441e5467e751f7438b20-4898x3265.jpg?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+    "@_type": "image/*",
+    "@_medium": "image"
+  },
+  "guid": {
+    "#text": "809d8a29-d605-48af-b2a8-cb08b4b7eb97",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Fri, 10 Jul 2026 04:34:06 +0000",
+  "description": "A sharp rise in the yen has left bitcoin and other major cryptocurrencies underperforming in yen terms compared with their dollar-based trading pairs.",
+  "dc:creator": "Omkar Godbole",
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "Markets",
+      "@_domain": "https://www.coindesk.com/markets"
+    },
+    {
+      "#text": "Bitcoin News",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "XRP News",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "News",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

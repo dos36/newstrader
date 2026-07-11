@@ -1,0 +1,40 @@
+{
+  "guid": {
+    "#text": "https://www.globenewswire.com/news-release/2026/07/10/3325742/6948/en/Nasdaq-Announces-End-of-Month-Open-Short-Interest-Positions-in-Nasdaq-Stocks-as-of-Settlement-Date-June-30-2026.html",
+    "@_isPermaLink": "true"
+  },
+  "link": "https://www.globenewswire.com/news-release/2026/07/10/3325742/6948/en/Nasdaq-Announces-End-of-Month-Open-Short-Interest-Positions-in-Nasdaq-Stocks-as-of-Settlement-Date-June-30-2026.html",
+  "category": [
+    {
+      "#text": "Nasdaq:NDAQ",
+      "@_domain": "https://www.globenewswire.com/rss/stock"
+    },
+    {
+      "#text": "US6311031081",
+      "@_domain": "https://www.globenewswire.com/rss/ISIN"
+    }
+  ],
+  "title": "Nasdaq Announces End-of-Month Open Short Interest Positions in Nasdaq Stocks as of Settlement Date June 30, 2026",
+  "description": "<p align=\"justify\">NEW YORK, July  10, 2026  (GLOBE NEWSWIRE) -- At the end of the settlement date of June 30, 2026, short interest in 3,804 Nasdaq Global Market<sup>SM </sup>securities totaled 18,453,725,441 shares compared with 17,903,270,409 shares in 3,764 Global Market issues reported for the prior settlement date of June 15, 2026. The June short interest represents 2.45 days compared with 2.79 days for the prior reporting period.</p>",
+  "pubDate": "Fri, 10 Jul 2026 20:05 GMT",
+  "dc:identifier": "3325742",
+  "dc:language": "en",
+  "dc:publisher": "GlobeNewswire Inc.",
+  "dc:contributor": "Nasdaq, Inc.",
+  "dc:modified": "Fri, 10 Jul 2026 20:05 GMT",
+  "media:content": {
+    "media:text": {
+      "#text": "<p>\n  <a href=\"https://www.globenewswire.com/news-release/2026/07/10/3325742/6948/en/Nasdaq-Announces-End-of-Month-Open-Short-Interest-Positions-in-Nasdaq-Stocks-as-of-Settlement-Date-June-30-2026.html\">\n    <img src=\"https://ml.globenewswire.com/Resource/Download/543a7fd2-6764-446e-b295-54cb175e9ded\" width=\"600\" align=\"left\" border=\"0\" alt=\"Chart 1\" title=\"Nasdaq Short Interest Days\" />\n  </a>\n</p><br clear=\"all\" />",
+      "@_type": "html"
+    },
+    "media:credit": {
+      "#text": "GlobeNewswire Inc.",
+      "@_role": "publishing company"
+    },
+    "@_medium": "image",
+    "@_type": "image/png",
+    "@_width": "600",
+    "@_url": "https://ml.globenewswire.com/Resource/Download/543a7fd2-6764-446e-b295-54cb175e9ded"
+  },
+  "dc:subject": "Exchange announcement"
+}

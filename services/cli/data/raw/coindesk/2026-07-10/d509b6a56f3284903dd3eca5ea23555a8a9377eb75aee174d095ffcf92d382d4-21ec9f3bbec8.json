@@ -1,0 +1,36 @@
+{
+  "title": "Arbitrum jumps 19% benefitting from Robinhood's $568 million onchain trading frenzy",
+  "link": "https://www.coindesk.com/markets/2026/07/09/arbitrum-jumps-19-benefitting-from-robinhood-s-usd568-million-onchain-trading-frenzy",
+  "media:content": {
+    "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/da9ffcdfcd965614c3a32a2e673631861308b387-1920x1080.jpg?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+    "@_type": "image/*",
+    "@_medium": "image"
+  },
+  "guid": {
+    "#text": "1a0969b3-98fb-461b-81bb-b241cd1b31a7",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Thu, 09 Jul 2026 20:28:51 +0000",
+  "description": "The brokerage's new blockchain is off to a fast start, with memecoin trading boosting activity and revenue flowing back to the Arbitrum ecosystem.",
+  "dc:creator": "Krisztian Sandor",
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "Markets",
+      "@_domain": "https://www.coindesk.com/markets"
+    },
+    {
+      "#text": "Robinhood",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "Ethereum News",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "News",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "title": "8-K - Golden Minerals Co (0001011509) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1011509/000110465926082613/0001104659-26-082613-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001104659-26-082613 <b>Size:</b> 189 KB\n<br>Item 5.07: Submission of Matters to a Vote of Security Holders",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T15:20:59-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001104659-26-082613"
+}

@@ -25,6 +25,16 @@ export function parseXml(xml: string): unknown {
     parseTagValue: false,
     trimValues: true,
     isArray: (_tagName, jPath) => ARRAY_JPATHS.has(jPath),
+    // The boolean default caps total entity expansions at 1000, which a busy
+    // 100-entry EDGAR page trips on ordinary &amp;/&#160; usage ("Entity
+    // expansion limit exceeded: 1002 > 1000", seen live 2026-07-10). Raise the
+    // volume caps for our trusted, size-bounded feeds; the depth/size guards
+    // that actually stop billion-laughs attacks keep their defaults.
+    processEntities: {
+      enabled: true,
+      maxTotalExpansions: 100_000,
+      maxEntityCount: 10_000,
+    },
   });
   return parser.parse(xml) as unknown;
 }

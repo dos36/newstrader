@@ -1,0 +1,23 @@
+{
+  "title": "SC 13D/A - GENCO SHIPPING & TRADING LTD (0001326200) (Subject)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1326200/000110465926081818/0001104659-26-081818-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-08 <b>AccNo:</b> 0001104659-26-081818 <b>Size:</b> 79 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-08T16:41:20-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "SC 13D/A"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001104659-26-081818"
+}

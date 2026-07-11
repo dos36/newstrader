@@ -1,0 +1,23 @@
+{
+  "title": "4 - HANNAH ALISON L. (0001645600) (Reporting)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1645600/000090514826003238/0000905148-26-003238-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0000905148-26-003238 <b>Size:</b> 5 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T21:53:28-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0000905148-26-003238"
+}

@@ -1,0 +1,23 @@
+{
+  "title": "8-K - iQSTEL Inc (0001527702) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1527702/000166357726000210/0001663577-26-000210-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001663577-26-000210 <b>Size:</b> 188 KB\n<br>Item 1.01: Entry into a Material Definitive Agreement",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T16:45:19-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001663577-26-000210"
+}

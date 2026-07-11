@@ -1,0 +1,25 @@
+{
+  "title": "Hackers tried to backdoor Injective NPM package to steal wallet keys",
+  "pubDate": "Fri, 10 Jul 2026 03:07:47 +0000",
+  "atom:updated": "Fri, 10 Jul 2026 12:58:49 +0000",
+  "guid": {
+    "#text": "https://cointelegraph.com/news/hackers-compromise-injective-npm-package-with-malware-to-steal-wallet-keys",
+    "@_isPermaLink": "true"
+  },
+  "link": "https://cointelegraph.com/news/hackers-compromise-injective-npm-package-with-malware-to-steal-wallet-keys?utm_source=rss_feed&utm_medium=rss&utm_campaign=rss_partner_inbound",
+  "description": "<p style=\"float:right; margin:0 0 10px 15px; width:240px;\"><img src=\"https://s3-images.ctmedia.io/media/article-covers/crimes-code-tweezers-theft-hack-hacker-red-wallet.jpg\" alt=\"Hackers tried to backdoor Injective NPM package to steal wallet keys \" class=\"type:primaryImage\"></p><p>The incident is significant for developers and applications that handle Injective wallet workflows, Socket researchers said.\n</p>",
+  "dc:creator": "Cointelegraph by Martin Young",
+  "media:content": {
+    "@_url": "https://s3-images.ctmedia.io/media/article-covers/crimes-code-tweezers-theft-hack-hacker-red-wallet.jpg",
+    "@_width": "528",
+    "@_medium": "image"
+  },
+  "enclosure": {
+    "@_url": "https://s3-images.ctmedia.io/media/article-covers/crimes-code-tweezers-theft-hack-hacker-red-wallet.jpg",
+    "@_length": "528",
+    "@_type": "image/jpeg"
+  },
+  "category": [
+    "Latest News"
+  ]
+}

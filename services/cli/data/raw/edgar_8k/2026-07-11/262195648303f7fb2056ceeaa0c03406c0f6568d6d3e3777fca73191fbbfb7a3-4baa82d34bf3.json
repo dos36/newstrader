@@ -1,0 +1,23 @@
+{
+  "title": "8-K - BRANDYWINE OPERATING PARTNERSHIP, L.P. (0001060386) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1060386/000079081626000022/0000790816-26-000022-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0000790816-26-000022 <b>Size:</b> 409 KB\n<br>Item 2.01: Completion of Acquisition or Disposition of Assets\n<br>Item 9.01: Financial Statements and Exhibits",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T15:17:59-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0000790816-26-000022"
+}

@@ -1,0 +1,28 @@
+{
+  "title": "Age verification is the surveillance nobody voted for",
+  "link": "https://www.coindesk.com/opinion/2026/07/09/age-verification-is-the-surveillance-nobody-voted-for",
+  "media:content": {
+    "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/324b3e140076b994f128d054863bc6d3af25ca25-7500x5000.jpg?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+    "@_type": "image/*",
+    "@_medium": "image"
+  },
+  "guid": {
+    "#text": "b4ddd678-97ac-42a3-922d-9f3fe987b44e",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Thu, 09 Jul 2026 13:00:00 +0000",
+  "description": "KOSA and Chat Control both retreated on their most-criticized measures this week, but both kept mandatory age verification, the quiet mechanism that turns anonymous browsing into identified browsing for all of us, argues Billions CEO Evin McMullen.",
+  "dc:creator": "Evin McMullen",
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "Opinion",
+      "@_domain": "https://www.coindesk.com/opinion"
+    },
+    {
+      "#text": "Opinion",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

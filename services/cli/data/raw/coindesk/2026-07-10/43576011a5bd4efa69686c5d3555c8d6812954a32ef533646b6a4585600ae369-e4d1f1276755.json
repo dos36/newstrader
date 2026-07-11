@@ -1,0 +1,39 @@
+{
+  "title": "Meta's Chief Data Officer Says Agentic Commerce is the \"Next Tier of Business\"",
+  "link": "https://www.coindesk.com/coindesk-news/2026/07/10/meta-s-chief-data-officer-says-agentic-commerce-is-the-next-tier-of-business",
+  "media:content": [
+    {
+      "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/0b55bc6f2fad31cc29bbad3b7a452e3ddd7fdf79-1920x1080.png?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+      "@_type": "image/*",
+      "@_medium": "image"
+    },
+    {
+      "@_url": "/video/alex-schultz-on-metas-future-it-might-be-the-next-tier-of-business-for-our-entire-company",
+      "@_type": "video/*",
+      "@_medium": "video"
+    }
+  ],
+  "guid": {
+    "#text": "43668787-f6f5-4e92-8155-ba541c96beef",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Fri, 10 Jul 2026 21:26:55 +0000",
+  "description": "Alex Schultz says stablecoins are assumed inside Meta. The harder problem is getting the rest of the world there.",
+  "dc:creator": "Sam Ewen",
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "CoinDesk News",
+      "@_domain": "https://www.coindesk.com/coindesk-news"
+    },
+    {
+      "#text": "Media Network Interview",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "News",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

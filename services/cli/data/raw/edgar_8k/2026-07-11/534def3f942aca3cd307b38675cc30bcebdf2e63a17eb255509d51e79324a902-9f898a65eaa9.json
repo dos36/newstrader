@@ -1,0 +1,23 @@
+{
+  "title": "8-K - GeoVax Labs, Inc. (0000832489) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/832489/000143774926023320/0001437749-26-023320-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001437749-26-023320 <b>Size:</b> 161 KB\n<br>Item 3.01: Notice of Delisting or Failure to Satisfy a Continued Listing Rule or Standard; Transfer of Listing",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T16:04:50-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001437749-26-023320"
+}

@@ -1,0 +1,23 @@
+{
+  "title": "8-K - AMASS BRANDS (0001851491) (Filer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1851491/000157587226000497/0001575872-26-000497-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001575872-26-000497 <b>Size:</b> 267 KB\n<br>Item 1.01: Entry into a Material Definitive Agreement\n<br>Item 9.01: Financial Statements and Exhibits",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T17:00:22-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "8-K"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001575872-26-000497"
+}

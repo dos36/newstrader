@@ -1,0 +1,23 @@
+{
+  "title": "4 - ICONIQ Strategic Partners VIII Holdings, L.P. (0002144668) (Reporting)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/2144668/000119312526301164/0001193125-26-301164-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001193125-26-301164 <b>Size:</b> 19 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T19:39:30-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001193125-26-301164"
+}

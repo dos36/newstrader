@@ -1,0 +1,23 @@
+{
+  "title": "4 - Netskope Inc (0002063196) (Issuer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/2063196/000119312526301161/0001193125-26-301161-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001193125-26-301161 <b>Size:</b> 14 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T19:37:28-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001193125-26-301161"
+}

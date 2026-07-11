@@ -1,0 +1,30 @@
+{
+  "guid": {
+    "#text": "https://www.globenewswire.com/news-release/2026/07/10/3325754/0/en/Gray-Announces-Participation-in-Upcoming-Investor-Events.html",
+    "@_isPermaLink": "true"
+  },
+  "link": "https://www.globenewswire.com/news-release/2026/07/10/3325754/0/en/Gray-Announces-Participation-in-Upcoming-Investor-Events.html",
+  "category": [
+    {
+      "#text": "NYSE:GTN",
+      "@_domain": "https://www.globenewswire.com/rss/stock"
+    },
+    {
+      "#text": "NYSE:GTN-A",
+      "@_domain": "https://www.globenewswire.com/rss/stock"
+    },
+    {
+      "#text": "US3893751061",
+      "@_domain": "https://www.globenewswire.com/rss/ISIN"
+    }
+  ],
+  "title": "Gray Announces Participation in Upcoming Investor Events",
+  "description": "<p><strong>ATLANTA, July  10, 2026  (GLOBE NEWSWIRE) -- </strong> Gray Media, Inc. announced today that the company is currently scheduled to participate at the following investor conferences:</p>",
+  "pubDate": "Fri, 10 Jul 2026 20:30 GMT",
+  "dc:identifier": "3325754",
+  "dc:language": "en",
+  "dc:publisher": "GlobeNewswire Inc.",
+  "dc:contributor": "Gray Media",
+  "dc:modified": "Fri, 10 Jul 2026 20:30 GMT",
+  "dc:subject": "Company Announcement"
+}

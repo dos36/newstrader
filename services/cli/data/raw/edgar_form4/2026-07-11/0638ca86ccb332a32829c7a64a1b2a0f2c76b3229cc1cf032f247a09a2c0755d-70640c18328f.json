@@ -1,0 +1,23 @@
+{
+  "title": "4 - Sarraf Pasha (0002059447) (Reporting)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/2059447/000205944726000004/0002059447-26-000004-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0002059447-26-000004 <b>Size:</b> 5 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T19:36:10-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0002059447-26-000004"
+}

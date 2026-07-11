@@ -1,0 +1,39 @@
+{
+  "guid": {
+    "#text": "https://www.globenewswire.com/news-release/2026/07/10/3325755/0/en/Japan-Smaller-Capitalization-Fund-Inc-Announces-Final-Results-of-Tender-Offer.html",
+    "@_isPermaLink": "true"
+  },
+  "link": "https://www.globenewswire.com/news-release/2026/07/10/3325755/0/en/Japan-Smaller-Capitalization-Fund-Inc-Announces-Final-Results-of-Tender-Offer.html",
+  "category": [
+    {
+      "#text": "NYSE:JOF",
+      "@_domain": "https://www.globenewswire.com/rss/stock"
+    },
+    {
+      "#text": "US47109U1043",
+      "@_domain": "https://www.globenewswire.com/rss/ISIN"
+    }
+  ],
+  "title": "Japan Smaller Capitalization Fund, Inc. Announces Final Results of Tender Offer",
+  "description": "Japan Smaller Capitalization Fund, Inc. (the “Fund”) (NYSE: JOF) today announced the final results of the Fund’s tender offer",
+  "pubDate": "Fri, 10 Jul 2026 20:30 GMT",
+  "dc:identifier": "3325755",
+  "dc:language": "en",
+  "dc:publisher": "GlobeNewswire Inc.",
+  "dc:contributor": "Japan Smaller Capitalization Fund",
+  "dc:modified": "Fri, 10 Jul 2026 20:30 GMT",
+  "dc:subject": [
+    "Changes in company's own shares",
+    "Corporate Action"
+  ],
+  "dc:keyword": [
+    "#CEF",
+    "#closedendfund",
+    "#emergingmarkets",
+    "#InvestmentNews",
+    "#JAPAN",
+    "#JapanInvesting",
+    "#JOF",
+    "#TenderOffer"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "title": "Hyundai becomes first major South Korean company to introduce internal stablecoin transfers",
+  "link": "https://www.coindesk.com/business/2026/07/10/hyundai-becomes-first-major-south-korean-company-to-introduce-internal-stablecoin-transfers",
+  "media:content": {
+    "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/fc1a4a08a209cc97dd1f7ba339f320d900f67507-5175x3514.jpg?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+    "@_type": "image/*",
+    "@_medium": "image"
+  },
+  "guid": {
+    "#text": "72d0a441-9042-4bb0-95ef-721df3b6f3ef",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Fri, 10 Jul 2026 15:26:43 +0000",
+  "description": "The initiative builds on a broader shift by companies exploring stablecoins to move money between international operations more efficiently.",
+  "dc:creator": "Olivier Acuna",
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "Finance",
+      "@_domain": "https://www.coindesk.com/business"
+    },
+    {
+      "#text": "Stablecoins",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "News",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

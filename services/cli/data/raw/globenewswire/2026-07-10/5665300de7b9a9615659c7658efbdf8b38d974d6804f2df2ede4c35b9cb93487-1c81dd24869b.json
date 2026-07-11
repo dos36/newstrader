@@ -1,0 +1,33 @@
+{
+  "guid": {
+    "#text": "https://www.globenewswire.com/news-release/2026/07/10/3325774/0/en/FOBI-AI-Inc-Announces-Revocation-of-Failure-to-File-Cease-Trade-Order.html",
+    "@_isPermaLink": "true"
+  },
+  "link": "https://www.globenewswire.com/news-release/2026/07/10/3325774/0/en/FOBI-AI-Inc-Announces-Revocation-of-Failure-to-File-Cease-Trade-Order.html",
+  "category": [
+    {
+      "#text": "TSX-V:FOBI",
+      "@_domain": "https://www.globenewswire.com/rss/stock"
+    },
+    {
+      "#text": "OTC Markets:FOBIF",
+      "@_domain": "https://www.globenewswire.com/rss/stock"
+    },
+    {
+      "#text": "CA34416F1036",
+      "@_domain": "https://www.globenewswire.com/rss/ISIN"
+    }
+  ],
+  "title": "FOBI AI Inc. Announces Revocation of Failure to File Cease Trade Order",
+  "description": "<p align=\"justify\">Vancouver, BC, July  10, 2026  (GLOBE NEWSWIRE) -- <strong>FOBI AI Inc. </strong><strong>(FOBI:TSXV) (Pink:FOBIF)</strong> (“<strong>Fobi</strong>” or the “<strong>Company</strong>”), a company that harnesses AI and data intelligence to enable digital transformation, is pleased to announce that the British Columbia Securities Commission, as principal regulator of the Company, has issued a full revocation (the “<strong>Revocation</strong>”) of the failure-to-file cease trade order previously issued against the Company on November 1, 2024 (the “<strong>FFCTO</strong>”).</p>",
+  "pubDate": "Fri, 10 Jul 2026 22:16 GMT",
+  "dc:identifier": "3325774",
+  "dc:language": "en",
+  "dc:publisher": "GlobeNewswire Inc.",
+  "dc:contributor": "Fobi AI Inc.",
+  "dc:modified": "Fri, 10 Jul 2026 22:17 GMT",
+  "dc:subject": [
+    "Company Announcement",
+    "Press releases"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "title": "Polymarket seeks approval to bring margin trading to U.S. customers",
+  "link": "https://www.coindesk.com/markets/2026/07/10/polymarket-seeks-approval-to-bring-margin-trading-to-u-s-customers",
+  "media:content": {
+    "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/3a10f0f1f99cb5edbe4443d5281553bd75080b6b-6048x4024.jpg?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+    "@_type": "image/*",
+    "@_medium": "image"
+  },
+  "guid": {
+    "#text": "c975a469-c54e-41df-b461-3a74398ef953",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Fri, 10 Jul 2026 09:35:21 +0000",
+  "description": "Polymarket's application to allow users to take positions that are not fully collateralized follows authorization granted to rival Kalshi in March.",
+  "dc:creator": "Olivier Acuna",
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "Markets",
+      "@_domain": "https://www.coindesk.com/markets"
+    },
+    {
+      "#text": "Polymarket",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "Prediction Markets",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "Regulation",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "News",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

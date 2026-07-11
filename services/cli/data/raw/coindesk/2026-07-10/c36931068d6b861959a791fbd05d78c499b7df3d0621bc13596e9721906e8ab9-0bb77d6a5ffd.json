@@ -1,0 +1,32 @@
+{
+  "title": "New Hampshire snuffs out trailblazing state-government bitcoin bond effort",
+  "link": "https://www.coindesk.com/policy/2026/07/09/new-hampshire-snuffs-out-trailblazing-bitcoin-municipal-bond-effort",
+  "media:content": {
+    "@_url": "https://cdn.sanity.io/images/s3y3vcno/production/af06ac0249ce8e16b83b49c0a2feb7f50b918760-2400x1350.jpg?fm=jpg&w=1920&h=1080&crop=focalpoint&fit=clip",
+    "@_type": "image/*",
+    "@_medium": "image"
+  },
+  "guid": {
+    "#text": "3ce4e77c-3d44-4e56-98a0-da8be0968997",
+    "@_isPermaLink": "false"
+  },
+  "pubDate": "Thu, 09 Jul 2026 22:19:54 +0000",
+  "description": "At its last stage for government approval, the state's executive council rejected the bond project 3-2.",
+  "dc:creator": "Jesse Hamilton",
+  "content:encoded": "",
+  "dc:description": "",
+  "category": [
+    {
+      "#text": "Policy",
+      "@_domain": "https://www.coindesk.com/policy"
+    },
+    {
+      "#text": "Bitcoin News",
+      "@_domain": "tag"
+    },
+    {
+      "#text": "News",
+      "@_domain": "https://www.coindesk.com/"
+    }
+  ]
+}

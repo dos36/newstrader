@@ -1,0 +1,23 @@
+{
+  "title": "4 - Meehan Viola Mong (0002137444) (Reporting)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/2137444/000213744426000007/0002137444-26-000007-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0002137444-26-000007 <b>Size:</b> 5 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T19:35:05-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0002137444-26-000007"
+}

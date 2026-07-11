@@ -1,0 +1,23 @@
+{
+  "title": "4 - Taysha Gene Therapies, Inc. (0001806310) (Issuer)",
+  "link": [
+    {
+      "@_rel": "alternate",
+      "@_type": "text/html",
+      "@_href": "https://www.sec.gov/Archives/edgar/data/1806310/000166512426000013/0001665124-26-000013-index.htm"
+    }
+  ],
+  "summary": {
+    "#text": "<b>Filed:</b> 2026-07-10 <b>AccNo:</b> 0001665124-26-000013 <b>Size:</b> 5 KB",
+    "@_type": "html"
+  },
+  "updated": "2026-07-10T18:54:36-04:00",
+  "category": [
+    {
+      "@_scheme": "https://www.sec.gov/",
+      "@_label": "form type",
+      "@_term": "4"
+    }
+  ],
+  "id": "urn:tag:sec.gov,2008:accession-number=0001665124-26-000013"
+}
