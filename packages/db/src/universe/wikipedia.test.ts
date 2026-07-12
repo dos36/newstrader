@@ -82,7 +82,10 @@ describe('parseSp500Wikitable', () => {
   });
 
   it('throws when a required header column disappears', () => {
-    const mutated = fixture.replace('>CIK</a>', '>Central Key</a>');
+    const mutated = fixture.replace('>CIK<', '>Central Key<');
+    // Guard against silent no-op mutations: a prettier reformat of the fixture
+    // once changed the exact substring and turned this test into a tautology.
+    expect(mutated).not.toBe(fixture);
     expect(() => parseSp500Wikitable(mutated, testBounds)).toThrow(/header column "cik"/);
   });
 
@@ -97,8 +100,13 @@ describe('parseSp500Wikitable', () => {
   });
 
   it('throws when a data row loses cells (format drift, not silent skip)', () => {
-    // Drop the CIK + Founded cells from the MMM row.
-    const mutated = fixture.replace('<td id="mwOw">0000066740</td><td id="mwPA">1902</td>', '');
+    // Drop the CIK + Founded cells from the MMM row. Whitespace-tolerant regex:
+    // fixture formatting must not silently defuse the mutation (see guard).
+    const mutated = fixture.replace(
+      /<td id="mwOw">0000066740<\/td>\s*<td id="mwPA">1902<\/td>/,
+      '',
+    );
+    expect(mutated).not.toBe(fixture);
     expect(() => parseSp500Wikitable(mutated, testBounds)).toThrow(/cells/);
   });
 });

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { App } from 'aws-cdk-lib';
 
+import { AnalyticsStack } from '../lib/analytics-stack.js';
 import { DataStack } from '../lib/data-stack.js';
 import { IngestStack } from '../lib/ingest-stack.js';
 import { OpsStack } from '../lib/ops-stack.js';
@@ -64,9 +65,19 @@ const ingest = new IngestStack(app, 'NewstraderIngest', {
   databaseName: data.databaseName,
 });
 
-new OpsStack(app, 'NewstraderOps', {
+const ops = new OpsStack(app, 'NewstraderOps', {
   env,
   qItems: ingest.qItems,
   qItemsDlq: ingest.qItemsDlq,
   monitoredFunctions: [...ingest.pollerFunctions, ingest.processFunction],
+});
+
+// M3 batch analytics. Alarms live inside the stack (sparse crons need
+// Errors>=1 alarms, not the ops-stack error-rate shape) but route to the same
+// ops SNS topic.
+new AnalyticsStack(app, 'NewstraderAnalytics', {
+  env,
+  dbSecret: data.dbSecret,
+  databaseName: data.databaseName,
+  alarmTopic: ops.alarmTopic,
 });

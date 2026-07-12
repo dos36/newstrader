@@ -1,0 +1,133 @@
+<!-- Trimmed REAL markup from https://www.bls.gov/schedule/news_release/ (captured 2026-07-11): Employment Situation page. -->
+<!-- Kept verbatim: the jQuery block that mentions .release-list (decoy), the h2, the release-list table, and the ICS content-box fragment. -->
+<html><body>
+<table id="main-content-table"><tr><td>
+<script>
+const currentMonth = new Date().getMonth()
+const currentYear = new Date().getFullYear()
+
+$('#secondary-nav .secondary-nav:nth-child(1) a[href$="sched.htm"]').map(function () {
+    let link = $(this).attr("href").split("/");
+	let mo = Number(link[3]?.split("_")[0])
+	
+	if ((link[2] == currentYear && mo < currentMonth) || (link[2] == currentYear-1 && currentMonth >= 1)) {
+		$(this).parent().remove()
+	}
+
+})
+
+
+// temporary
+$(document).ready(function() {
+for (const [id, value] of Object.entries({'d0205': 'Productivity and Costs (P)', 'd0212': 'Producer Price Index', 'd0218': 'U.S. Import and Export Price Indexes'})) {
+    $('#'+id).find('p:not(.day)').each(function(){
+        if ($(this).find('strong').text() == value) {
+            if (!$(this).next().length) {
+                $(this).html('')
+            } else {
+                $(this).remove()
+            }
+        }
+    })
+}
+
+$('.release-list tr').attr('class', '')
+
+$('.release-list tr').each(function() {
+    for (const [date, value] of Object.entries({'Thursday, February 5, 2026': 'Productivity and Costs (P)', 'Thursday, February 12, 2026': 'Producer Price Index', 'Wednesday, February 18, 2026': 'U.S. Import and Export Price Indexes'})) {
+        if ($(this).find('td strong').text() == value && $(this).find('td:nth-child(1) p').text() == date) {
+            $(this).remove()
+        }
+    }
+})
+
+$('.release-list tr:even').addClass('release-list-odd-row')
+$('.release-list tr:odd').addClass('release-list-even-row')
+})
+
+</script>
+<h2>Schedule of Releases for the Employment Situation</h2>
+<hr>
+<table class="release-list">
+<thead>
+<tr>
+<th>Reference Month</th>
+<th>Release Date</th>
+<th>Release Time</th>
+</tr>
+</thead>
+<tbody>
+<tr class="release-list-even-row">
+<td>November 2025</td>
+<td>Dec. 16, 2025</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-odd-row">
+<td>December 2025</td>
+<td>Jan. 09, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-even-row">
+<td>January 2026</td>
+<td>Feb. 11, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-odd-row">
+<td>February 2026</td>
+<td>Mar. 06, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-even-row">
+<td>March 2026</td>
+<td>Apr. 03, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-odd-row">
+<td>April 2026</td>
+<td>May 08, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-even-row">
+<td>May 2026</td>
+<td>Jun. 05, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-odd-row">
+<td>June 2026</td>
+<td>Jul. 02, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-even-row">
+<td>July 2026</td>
+<td>Aug. 07, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-odd-row">
+<td>August 2026</td>
+<td>Sep. 04, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-even-row">
+<td>September 2026</td>
+<td>Oct. 02, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-odd-row">
+<td>October 2026</td>
+<td>Nov. 06, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-even-row">
+<td>November 2026</td>
+<td>Dec. 04, 2026</td>
+<td>08:30 AM</td>
+</tr>
+</tbody>
+</table>
+<div class="content-box">
+	<div class="content-box-outer">
+		<div class="content-box-inner">
+			<span class="heading-2">Subscribe to the BLS Online Calendar</span>
+			<p><strong>Online calendar subscription &#8212; automatically updated</strong>:</p></div></div></div>
+</td></tr></table>
+</body></html>

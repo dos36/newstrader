@@ -18,13 +18,22 @@ import {
   instruments,
   itemInstrumentLinks,
   loadResolverDictionary,
+  MEASURER_VERSION,
+  measureReactions,
   newsClusterItems,
   newsClusters,
   newsSources,
+  priceBars1d,
+  priceBars1m,
   rawNewsItems,
+  reactionMeasurements,
+  reactionSummary,
+  recoveryMeasurements,
   RESOLVER_VERSION,
+  scheduledEvents,
+  upsertBars1m,
 } from '@newstrader/db';
-import type { Db } from '@newstrader/db';
+import type { BarUpsertRow, Db } from '@newstrader/db';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   loadItemsByIds,
@@ -339,6 +348,95 @@ describe.skipIf(!testDatabaseUrl)('ingest e2e: fixtures → poll → process →
     expect(again).toMatchObject({ processed: 2, itemsLinked: 2, linksWritten: 0 });
     expect(await db.select().from(itemInstrumentLinks)).toHaveLength(2);
   });
+
+  it('measures reactions end-to-end: poll → process → seeded bars → measure', async () => {
+    // M3 flow: the same ingest core produces the cluster + instrument link
+    // (source_hint 0.95 ≥ MIN_LINK_CONFIDENCE), then seeded minute bars around
+    // the anchor let measureReactions write the ladder + summary. The anchor
+    // is first_received_at = T0 (OUR clock) — publishedAt (T0 − 1h in the
+    // fixture) must play no role, which the assertions below pin via anchorTs.
+    const acmeId = newId();
+    await db
+      .insert(instruments)
+      .values({ id: acmeId, symbol: 'ACME', assetClass: 'us_equity', name: 'Acme Corp' });
+
+    const wire = new FakeAdapter('fake_wire', [STORY_A_WIRE]);
+    const { deps } = fixtureWorld();
+    await runPoll(deps, wire);
+    const items = await loadUnclusteredItems(db, 500);
+    await runProcess(db, items, await loadResolverDictionary(db));
+
+    const [cluster] = await db.select().from(newsClusters);
+    if (cluster === undefined) throw new Error('cluster missing');
+    expect(cluster.firstReceivedAt).toEqual(T0);
+
+    // Bars: flat 100.000000 before/at the anchor, 101.000000 from anchor+1m on
+    // (a clean +100 bps step), covering anchor−30m … anchor+1d+10m. 3d/5d
+    // horizons stay unmeasurable: the last bar is >30m stale at those horizons
+    // and no later bar proves the gap was non-trading.
+    const bars: BarUpsertRow[] = [];
+    for (let minute = -30; minute <= 24 * 60 + 10; minute += 1) {
+      const close = minute < 1 ? '100.000000' : '101.000000';
+      bars.push({
+        instrumentId: acmeId,
+        ts: new Date(T0.getTime() + minute * 60_000),
+        open: close,
+        high: close,
+        low: close,
+        close,
+        volume: null,
+        source: 'massive_aggs',
+      });
+    }
+    expect(await upsertBars1m(db, bars)).toBe(bars.length);
+
+    const now = new Date(T0.getTime() + 36 * 3_600_000);
+    const totals = await measureReactions(db, { sinceHours: 48, now });
+    expect(totals).toEqual({
+      clusters: 1,
+      pairs: 1,
+      measured: 1,
+      skippedNoBars: 0,
+      horizonsWritten: 6, // 5m 15m 30m 1h 4h 1d; 3d/5d not yet settled
+    });
+
+    const ladder = await db.select().from(reactionMeasurements);
+    expect(ladder).toHaveLength(6);
+    expect(new Set(ladder.map((row) => row.horizon))).toEqual(
+      new Set(['5m', '15m', '30m', '1h', '4h', '1d']),
+    );
+    for (const row of ladder) {
+      expect(row.clusterId).toBe(cluster.id);
+      expect(row.instrumentId).toBe(acmeId);
+      expect(row.measurerVersion).toBe(MEASURER_VERSION);
+      expect(row.anchorTs).toEqual(T0);
+      expect(row.rawReturnBps).toBeCloseTo(100, 3);
+      // No SPY instrument/bars seeded → abnormal degrades to raw, benchmark null.
+      expect(row.abnormalReturnBps).toBe(row.rawReturnBps);
+      expect(row.benchmark).toBeNull();
+      expect(row.betaUsed).toBeNull();
+      expect(row.barsSource).toBe('massive_aggs');
+    }
+
+    const summaries = await db.select().from(reactionSummary);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      clusterId: cluster.id,
+      instrumentId: acmeId,
+      direction1d: 'up',
+    });
+    expect(summaries[0]?.peakAbnormalMoveBps).toBeCloseTo(100, 3);
+    // The step happens at anchor+1m, so half the 1d move is reached immediately.
+    expect(summaries[0]?.timeToHalfOf1dMoveMinutes).toBe(1);
+
+    // +100 bps is not a negative event: no recovery row.
+    expect(await db.select().from(recoveryMeasurements)).toHaveLength(0);
+
+    // Idempotency: a re-run measures the same pair but writes nothing new.
+    const rerun = await measureReactions(db, { sinceHours: 48, now });
+    expect(rerun).toMatchObject({ measured: 1, horizonsWritten: 0 });
+    expect(await db.select().from(reactionMeasurements)).toHaveLength(6);
+  });
 });
 
 // ------------------------------------------------------------------ helpers --
@@ -351,6 +449,13 @@ describe.skipIf(!testDatabaseUrl)('ingest e2e: fixtures → poll → process →
  * this suite's dedicated e2e database.
  */
 async function wipeIngestTables(db: Db): Promise<void> {
+  // M3 derived/fact tables first: they reference clusters and instruments.
+  await db.delete(reactionMeasurements);
+  await db.delete(reactionSummary);
+  await db.delete(recoveryMeasurements);
+  await db.delete(scheduledEvents);
+  await db.delete(priceBars1m);
+  await db.delete(priceBars1d);
   await db.delete(newsClusterItems);
   await db.delete(newsClusters);
   await db.delete(itemInstrumentLinks);

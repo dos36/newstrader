@@ -16,6 +16,26 @@ export interface AwsCallOptions {
   fetchImpl?: FetchLike;
 }
 
+/**
+ * Thrown by awsJsonCall on a non-2xx response. `awsErrorType` is the AWS
+ * error shorthand (e.g. "ParameterNotFound", "AccessDeniedException") parsed
+ * from the awsJson-1.1 error body's `__type`, when the body is shaped that
+ * way — undefined for a body that isn't parseable JSON or lacks `__type`
+ * (e.g. an API Gateway/network error page). Callers that need to distinguish
+ * "this resource legitimately doesn't exist yet" from "we're not allowed to
+ * read it" (optionalSsmParameter in boot.ts) branch on this instead of
+ * guessing from the message text.
+ */
+export class AwsJsonError extends Error {
+  readonly awsErrorType: string | undefined;
+
+  constructor(message: string, awsErrorType: string | undefined) {
+    super(message);
+    this.name = 'AwsJsonError';
+    this.awsErrorType = awsErrorType;
+  }
+}
+
 /** GetParameter with decryption — reads the SecureString operator secrets. */
 export async function getSsmParameter(name: string, options?: AwsCallOptions): Promise<string> {
   const response = await awsJsonCall({
@@ -77,11 +97,30 @@ export async function awsJsonCall(input: AwsJsonCallInput): Promise<unknown> {
   const response = await fetchImpl(url.toString(), { method: 'POST', headers, body });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    throw new Error(
+    throw new AwsJsonError(
       `${input.service} ${input.target} failed: HTTP ${response.status} ${text.slice(0, 300)}`,
+      extractAwsErrorType(text),
     );
   }
   return response.json() as Promise<unknown>;
+}
+
+/**
+ * Parse the awsJson-1.1 error body's `__type` down to its shorthand name:
+ * "com.amazonaws.ssm#ParameterNotFound" → "ParameterNotFound",
+ * "AccessDeniedException" (already bare) → unchanged. Undefined when the
+ * body isn't JSON-shaped-with-`__type` at all.
+ */
+function extractAwsErrorType(bodyText: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const type = (parsed as Record<string, unknown>)['__type'];
+  return typeof type === 'string' ? type.split('#').pop() : undefined;
 }
 
 function envCredentials(env: NodeJS.ProcessEnv): AwsCredentials {

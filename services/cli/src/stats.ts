@@ -1,3 +1,4 @@
+import { MIN_LINK_CONFIDENCE } from '@newstrader/db';
 import type { Db } from '@newstrader/db';
 
 /**
@@ -19,6 +20,17 @@ type ClustersPerDayRow = { day: string; new_clusters: number };
 type CoverageRow = { source_key: string; items: number; linked: number };
 type MethodRow = { method: string; links: number };
 type TopInstrumentRow = { symbol: string; items: number };
+type ReactionOverviewRow = {
+  measured_pairs: number;
+  median_abs_1d_abnormal_bps: number | null;
+};
+type AlphaDecayRow = {
+  source_kind: string;
+  summaries: number;
+  median_half_move_min: number | null;
+};
+type UnmeasuredRow = { pairs_unmeasured: number };
+type CalendarRow = { kind: string; events: number; next_at: string };
 
 export async function printStats(db: Db): Promise<void> {
   const [itemsPerDay, totals, topClusters, clustersPerDay, coverage, methods, topInstruments] =
@@ -85,6 +97,59 @@ export async function printStats(db: Db): Promise<void> {
       ),
     ]);
 
+  // M3 sections. Separate Promise.all: these tables may be empty pre-M3 runs,
+  // and grouping keeps the query list readable.
+  const [reactionOverview, alphaDecay, unmeasured, calendar] = await Promise.all([
+    db.$client.query<ReactionOverviewRow>(
+      `select count(distinct (cluster_id, instrument_id))::int as measured_pairs,
+              percentile_cont(0.5) within group (order by abs(abnormal_return_bps))
+                filter (where horizon = '1d') as median_abs_1d_abnormal_bps
+         from reaction_measurements
+        where anchor_ts >= now() - interval '7 days'`,
+    ),
+    // The alpha-decay readout (architecture §6 Q3): median minutes until half
+    // of the 1d move was realized, sliced by the kind of the source that broke
+    // the story. This is the minutes-migration trigger series (§4.7).
+    db.$client.query<AlphaDecayRow>(
+      `select s.kind as source_kind,
+              count(*)::int as summaries,
+              percentile_cont(0.5) within group (order by rs.time_to_half_of_1d_move_minutes)
+                as median_half_move_min
+         from reaction_summary rs
+         join news_clusters c on c.id = rs.cluster_id
+         join news_sources s on s.id = c.first_source_id
+        where rs.anchor_ts >= now() - interval '7 days'
+        group by s.kind
+        order by s.kind`,
+    ),
+    // Qualifying (cluster, instrument) pairs with no measurement row yet —
+    // missing bars or horizons not yet settled (mirrors measureReactions'
+    // skippedNoBars, but queryable after the fact).
+    db.$client.query<UnmeasuredRow>(
+      `select count(*)::int as pairs_unmeasured from (
+         select distinct nci.cluster_id, l.instrument_id
+           from news_clusters c
+           join news_cluster_items nci on nci.cluster_id = c.id
+           join item_instrument_links l on l.item_id = nci.item_id
+          where c.first_received_at >= now() - interval '7 days'
+            and l.confidence >= $1
+            and not exists (
+              select 1 from reaction_measurements m
+               where m.cluster_id = nci.cluster_id and m.instrument_id = l.instrument_id)
+       ) q`,
+      [MIN_LINK_CONFIDENCE],
+    ),
+    db.$client.query<CalendarRow>(
+      `select kind,
+              count(*)::int as events,
+              to_char(min(scheduled_at) at time zone 'UTC', 'YYYY-MM-DD HH24:MI') as next_at
+         from scheduled_events
+        where scheduled_at between now() and now() + interval '7 days'
+        group by kind
+        order by kind`,
+    ),
+  ]);
+
   console.log('\n== Items per day by source (last 7 days, UTC) ==');
   if (itemsPerDay.rows.length === 0) {
     console.log('(no items in the last 7 days — run `poll` first)');
@@ -124,6 +189,54 @@ export async function printStats(db: Db): Promise<void> {
     console.log('-- top 10 instruments by linked items --');
     console.table(topInstruments.rows);
   }
+
+  console.log('\n== Reaction (last 7d) ==');
+  const overview = reactionOverview.rows[0];
+  const unmeasuredCount = unmeasured.rows[0]?.pairs_unmeasured ?? 0;
+  if (overview === undefined || overview.measured_pairs === 0) {
+    console.log(
+      `(no measurements yet — run \`bars:backfill\` then \`measure\`; ` +
+        `${unmeasuredCount} linked pair(s) awaiting bars)`,
+    );
+  } else {
+    console.log(formatReactionOverview(overview, unmeasuredCount));
+    if (alphaDecay.rows.length > 0) {
+      console.log('-- alpha decay: median minutes to half of the 1d move, by first source kind --');
+      console.table(alphaDecayTable(alphaDecay.rows));
+    }
+  }
+
+  console.log('== Calendar (next 7d) ==');
+  if (calendar.rows.length === 0) {
+    console.log('(no upcoming scheduled events — run `calendar:sync`)');
+  } else {
+    console.table(calendar.rows);
+  }
+}
+
+/** One line: measured pairs, the 1d abnormal-move median, and the not-yet-measured backlog. */
+export function formatReactionOverview(
+  overview: { measured_pairs: number; median_abs_1d_abnormal_bps: number | null },
+  pairsUnmeasured: number,
+): string {
+  const median =
+    overview.median_abs_1d_abnormal_bps === null
+      ? 'n/a (no 1d horizons settled)'
+      : `${overview.median_abs_1d_abnormal_bps.toFixed(1)} bps`;
+  return (
+    `measured pairs=${overview.measured_pairs} median |1d abnormal|=${median} ` +
+    `unmeasured linked pairs (missing/unsettled bars)=${pairsUnmeasured}`
+  );
+}
+
+/** Round the medians for display; null = no summary had a half-move time. */
+export function alphaDecayTable(rows: readonly AlphaDecayRow[]): Record<string, string | number>[] {
+  return rows.map((row) => ({
+    'source kind': row.source_kind,
+    summaries: row.summaries,
+    'median min to half-move':
+      row.median_half_move_min === null ? '—' : row.median_half_move_min.toFixed(1),
+  }));
 }
 
 /** One console.table row per day, one column per source key. */

@@ -3,15 +3,32 @@ import { fileURLToPath } from 'node:url';
 import { allAdapters, FsRawStore } from '@newstrader/adapters';
 import type { RawStore, SourceAdapter } from '@newstrader/core';
 import {
+  backfillEventWindows,
   closeStaleClusters,
   createDb,
+  defaultCalendarDeps,
+  ensureBenchmarks,
+  ensureDailyBars,
+  fetchAggsBars,
+  fetchKrakenOhlc,
   fetchSecTickerMap,
+  fetchSnapshotMinuteBars,
   fetchSp500FromWikipedia,
   loadResolverDictionary,
+  measureReactions,
+  recordSnapshot,
   resolveUnlinkedItems,
+  syncCalendar,
   syncUniverse,
 } from '@newstrader/db';
-import type { Db, ResolveCursor } from '@newstrader/db';
+import type {
+  BackfillDeps,
+  Db,
+  EnsureDailyBarsDeps,
+  MassiveBarsOptions,
+  RecordSnapshotDeps,
+  ResolveCursor,
+} from '@newstrader/db';
 import { Command } from 'commander';
 import dotenv from 'dotenv';
 import {
@@ -38,6 +55,10 @@ import { printStats } from './stats.js';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 dotenv.config();
 dotenv.config({ path: path.join(REPO_ROOT, '.env') });
+
+// Declared before parseAsync: command actions run synchronously during parse,
+// i.e. before any `const` below the parseAsync call leaves its TDZ.
+const DAY_MS = 86_400_000;
 
 const program = new Command();
 
@@ -205,8 +226,146 @@ program
   });
 
 program
+  .command('bars:record')
+  .option('--loop <seconds>', 'repeat forever with this many seconds between cycles')
+  .description(
+    'One bars-recorder tick (architecture §5.5): Massive full-market snapshot for the equity ' +
+      'universe + benchmarks, Kraken OHLC per coin → price_bars_1m (first-write-wins). ' +
+      'Requires MASSIVE_API_KEY with the Stocks Starter snapshot entitlement.',
+  )
+  .action(async (options: { loop?: string }) => {
+    const loopSeconds =
+      options.loop === undefined ? undefined : parsePositiveInt(options.loop, '--loop');
+    await withDb(async (db) => {
+      // SPY/BTC must exist before the first tick or the snapshot silently
+      // misses the abnormal-return baseline; idempotent, so safe every run.
+      await ensureBenchmarks(db);
+      for (;;) {
+        try {
+          const counts = await recordSnapshot(db, snapshotDeps());
+          console.log(
+            `[bars:record] equities=${counts.equitySymbols} equityBars=${counts.equityBarsUpserted} ` +
+              `cryptoInstruments=${counts.cryptoInstruments} cryptoBars=${counts.cryptoBarsUpserted}`,
+          );
+        } catch (error) {
+          if (loopSeconds === undefined) throw error;
+          // Loop mode mirrors poll --loop: a failed cycle is logged, the next
+          // tick supersedes it (bars are immutable facts; no state to repair).
+          console.error(
+            `[bars:record] cycle FAILED: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        if (loopSeconds === undefined) return;
+        console.log(`[bars:record] sleeping ${loopSeconds}s (ctrl-c to stop)`);
+        await sleep(loopSeconds * 1000);
+      }
+    });
+  });
+
+program
+  .command('bars:backfill')
+  .option('--from <iso>', 'range start over cluster first_received_at (inclusive)')
+  .option('--to <iso>', 'range end (default: now)')
+  .option('--days <n>', 'shorthand when --from is omitted: from = to − n days', '3')
+  .option(
+    '--throttle-ms <n>',
+    'delay between sequential Massive calls (default 250 ≈ 4 req/s for Starter; ' +
+      'a key still on free-tier stocks limits needs ~13000 ≈ 5 req/min or every call 429s)',
+  )
+  .description(
+    'Seed benchmarks, top up daily bars (beta window), then backfill minute bars around every ' +
+      'clustered story in the range via Massive aggregates / Kraken OHLC (event windows ' +
+      'anchor−72h … anchor+5d, coalesced per instrument).',
+  )
+  .action(async (options: { from?: string; to?: string; days: string; throttleMs?: string }) => {
+    const to = options.to === undefined ? new Date() : parseIsoDate(options.to, '--to');
+    const from =
+      options.from === undefined
+        ? new Date(to.getTime() - parsePositiveInt(options.days, '--days') * DAY_MS)
+        : parseIsoDate(options.from, '--from');
+    if (from.getTime() > to.getTime()) throw new Error('--from must not be after --to');
+    const throttleMs =
+      options.throttleMs === undefined
+        ? undefined
+        : parsePositiveInt(options.throttleMs, '--throttle-ms');
+    await withDb(async (db) => {
+      const benchmarks = await ensureBenchmarks(db);
+      // Daily lookback: the beta estimator wants 90 d of dailies BEFORE the
+      // earliest anchor in the range, plus margin for non-trading days.
+      const lookbackDays = Math.ceil((Date.now() - from.getTime()) / DAY_MS) + 100;
+      const daily = await ensureDailyBars(
+        db,
+        { ...dailyBarsDeps(), ...(throttleMs !== undefined ? { throttleMs } : {}) },
+        { lookbackDays },
+      );
+      const backfill = await backfillEventWindows(
+        db,
+        { ...backfillDeps(), ...(throttleMs !== undefined ? { throttleMs } : {}) },
+        { from, to },
+      );
+      console.table([
+        {
+          'benchmarks seeded': benchmarks.inserted,
+          'daily bars': daily.barsUpserted,
+          clusters: backfill.clusters,
+          instruments: backfill.instruments,
+          'windows (coalesced)': `${backfill.windowsRequested} (${backfill.windowsCoalesced})`,
+          'minute bars': backfill.barsUpserted,
+          'crypto gap windows': backfill.cryptoGapWindows,
+        },
+      ]);
+    });
+  });
+
+program
+  .command('calendar:sync')
+  .option('--horizon-days <n>', 'forward window for scheduled events', '90')
+  .description(
+    'Sync scheduled_events from the macro calendars (FOMC/CPI/NFP/GDP/PCE) and — when ' +
+      'FINNHUB_API_KEY is set — the Finnhub earnings calendar for current S&P 500 members. ' +
+      'Feeds the deterministic already_expected / calendar_match feature.',
+  )
+  .action(async (options: { horizonDays: string }) => {
+    const horizonDays = parsePositiveInt(options.horizonDays, '--horizon-days');
+    await withDb(async (db) => {
+      const counts = await syncCalendar(db, defaultCalendarDeps(process.env), { horizonDays });
+      console.table([
+        {
+          ...counts.inserted,
+          duplicates: counts.duplicates,
+          'outside window': counts.outsideWindow,
+          'earnings skipped': counts.earningsSymbolsSkipped,
+        },
+      ]);
+    });
+  });
+
+program
+  .command('measure')
+  .option(
+    '--since-hours <n>',
+    'measure clusters first seen in the last N hours',
+    '216', // matches services/handlers/src/measure.ts's MEASURE_SINCE_HOURS default (5d horizons need ~9d of window)
+  )
+  .description(
+    'Run the reaction/recovery measurer over recent clusters: abnormal-return ladder per ' +
+      '(cluster, instrument, horizon), one-day summary, recovery metrics for negative events. ' +
+      'Anchored on first_received_at; idempotent (conflict-do-nothing per horizon).',
+  )
+  .action(async (options: { sinceHours: string }) => {
+    const sinceHours = parsePositiveInt(options.sinceHours, '--since-hours');
+    await withDb(async (db) => {
+      const totals = await measureReactions(db, { sinceHours });
+      console.table([totals]);
+    });
+  });
+
+program
   .command('stats')
-  .description('M0 KPIs: items/day by source, dedup ratio, top clusters, clusters/day')
+  .description(
+    'KPIs: items/day by source, dedup ratio, top clusters, clusters/day, resolution coverage, ' +
+      'reaction ladder + alpha-decay medians (last 7d), upcoming calendar events',
+  )
   .action(async () => {
     await withDb(printStats);
   });
@@ -290,6 +449,53 @@ function parsePositiveInt(value: string, flag: string): number {
     throw new Error(`${flag} must be a positive integer, got "${value}"`);
   }
   return parsed;
+}
+
+function parseIsoDate(value: string, flag: string): Date {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`${flag} must be an ISO date/time, got "${value}"`);
+  }
+  return parsed;
+}
+
+// ------------------------------------------------------------- bars deps --
+// Composition per the doc comments on RecordSnapshotDeps / BackfillDeps /
+// EnsureDailyBarsDeps: Massive key from .env (Bearer header, never a URL
+// param), Kraken public (no auth). Kraken bars-deps note: the OHLC endpoint
+// only serves ~720 candles, so crypto backfill is best-effort by design.
+
+function massiveOptions(): MassiveBarsOptions {
+  return {
+    apiKey: process.env['MASSIVE_API_KEY'],
+    baseUrl: process.env['MASSIVE_BASE_URL'],
+  };
+}
+
+function snapshotDeps(): RecordSnapshotDeps {
+  const massive = massiveOptions();
+  return {
+    fetchEquitySnapshot: (symbols) => fetchSnapshotMinuteBars(massive, symbols),
+    fetchCryptoMinuteBars: (symbol) => fetchKrakenOhlc({}, { symbol, interval: 1 }),
+  };
+}
+
+function backfillDeps(): BackfillDeps {
+  const massive = massiveOptions();
+  return {
+    fetchEquityMinuteBars: (symbol, fromMs, toMs) =>
+      fetchAggsBars(massive, { symbol, timespan: 'minute', fromMs, toMs }),
+    fetchCryptoMinuteBars: (symbol) => fetchKrakenOhlc({}, { symbol, interval: 1 }),
+  };
+}
+
+function dailyBarsDeps(): EnsureDailyBarsDeps {
+  const massive = massiveOptions();
+  return {
+    fetchEquityDailyBars: (symbol, fromMs, toMs) =>
+      fetchAggsBars(massive, { symbol, timespan: 'day', fromMs, toMs }),
+    fetchCryptoDailyBars: (symbol) => fetchKrakenOhlc({}, { symbol, interval: 1440 }),
+  };
 }
 
 function sleep(ms: number): Promise<void> {

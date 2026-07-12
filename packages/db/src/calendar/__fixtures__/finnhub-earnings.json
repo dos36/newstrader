@@ -1,0 +1,26 @@
+{
+  "earningsCalendar": [
+    {
+      "date": "2020-01-28",
+      "epsActual": 4.99,
+      "epsEstimate": 4.5474,
+      "hour": "amc",
+      "quarter": 1,
+      "revenueActual": 91819000000,
+      "revenueEstimate": 88496400810,
+      "symbol": "AAPL",
+      "year": 2020
+    },
+    {
+      "date": "2019-10-30",
+      "epsActual": 3.03,
+      "epsEstimate": 2.8393,
+      "hour": "amc",
+      "quarter": 4,
+      "revenueActual": 64040000000,
+      "revenueEstimate": 62985161760,
+      "symbol": "AAPL",
+      "year": 2019
+    }
+  ]
+}

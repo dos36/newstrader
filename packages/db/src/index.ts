@@ -3,3 +3,7 @@ export * from './client.js';
 export * from './clustering-repo.js';
 export * from './universe/index.js';
 export * from './resolver/index.js';
+export * from './bars/index.js';
+export * from './reaction/index.js';
+export * from './calendar/index.js';
+export * from './shared-constants.js';

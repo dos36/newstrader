@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getSecretString, getSsmParameter } from './aws-api.js';
+import { AwsJsonError, getSecretString, getSsmParameter } from './aws-api.js';
 import type { FetchLike } from './aws-api.js';
 
 /** Fake Lambda runtime env — never process.env, tests stay hermetic. */
@@ -64,6 +64,31 @@ describe('getSsmParameter', () => {
         fetchImpl: fakeFetch(400, { __type: 'AccessDeniedException' }, []),
       }),
     ).rejects.toThrow(/HTTP 400/);
+  });
+
+  it('throws an AwsJsonError carrying the parsed __type', async () => {
+    const error: unknown = await getSsmParameter('/denied', {
+      env: ENV,
+      fetchImpl: fakeFetch(400, { __type: 'AccessDeniedException' }, []),
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AwsJsonError);
+    expect((error as AwsJsonError).awsErrorType).toBe('AccessDeniedException');
+  });
+
+  it('parses a namespaced __type ("com.amazonaws.ssm#ParameterNotFound") down to its shorthand name', async () => {
+    const error: unknown = await getSsmParameter('/missing-param', {
+      env: ENV,
+      fetchImpl: fakeFetch(400, { __type: 'com.amazonaws.ssm#ParameterNotFound' }, []),
+    }).catch((e: unknown) => e);
+    expect((error as AwsJsonError).awsErrorType).toBe('ParameterNotFound');
+  });
+
+  it('has an undefined awsErrorType when the error body is not the expected shape', async () => {
+    const error: unknown = await getSsmParameter('/opaque', {
+      env: ENV,
+      fetchImpl: fakeFetch(500, 'internal server error', []),
+    }).catch((e: unknown) => e);
+    expect((error as AwsJsonError).awsErrorType).toBeUndefined();
   });
 });
 

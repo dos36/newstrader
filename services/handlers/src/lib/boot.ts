@@ -2,7 +2,8 @@ import { edgarAdapters, massiveNewsAdapter, rssPresetAdapters } from '@newstrade
 import type { SourceAdapter } from '@newstrader/core';
 import { createDb } from '@newstrader/db';
 import type { Db } from '@newstrader/db';
-import { getSecretString, getSsmParameter } from './aws-api.js';
+import { AwsJsonError, getSecretString, getSsmParameter } from './aws-api.js';
+import type { AwsCallOptions } from './aws-api.js';
 
 /**
  * Lambda cold-start wiring: env contract (set by infra/lib/ingest-stack.ts),
@@ -16,6 +17,56 @@ export function requireEnv(name: string): string {
     throw new Error(`Missing required env var ${name}`);
   }
   return value;
+}
+
+/**
+ * Read an SSM SecureString whose parameter NAME arrives via an optional env
+ * var. Returns undefined (with a structured warn) when the env var is unset
+ * OR the parameter does not exist yet (AWS ParameterNotFound) — used for
+ * operator secrets that are provisioned out-of-band after deploy (e.g.
+ * /newstrader/finnhub-api-key: the calendar sync runs without earnings until
+ * the key exists, and a warm-free daily schedule picks the new value up on
+ * the next cold start without a redeploy). Any OTHER SSM failure (denied
+ * permissions, throttling, a malformed response, …) is rethrown instead of
+ * silently downgrading to "not provisioned" — those are operational bugs,
+ * not the expected not-yet-provisioned state. Callers that cannot run
+ * without the secret must use getSsmParameter(requireEnv(...)) instead so
+ * failures stay loud unconditionally.
+ */
+export async function optionalSsmParameter(
+  envName: string,
+  options?: AwsCallOptions,
+): Promise<string | undefined> {
+  const parameterName = process.env[envName];
+  if (parameterName === undefined || parameterName.trim() === '') return undefined;
+  try {
+    return await getSsmParameter(parameterName, options);
+  } catch (error) {
+    if (!(error instanceof AwsJsonError) || error.awsErrorType !== 'ParameterNotFound') {
+      throw error;
+    }
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        msg: 'optional_ssm_parameter_unavailable',
+        envName,
+        parameterName,
+        error: String(error),
+      }),
+    );
+    return undefined;
+  }
+}
+
+/** Optional positive-integer env knob (schedule tuning without code changes). */
+export function intEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`Env var ${name} must be a positive integer, got "${raw}"`);
+  }
+  return parsed;
 }
 
 /**
