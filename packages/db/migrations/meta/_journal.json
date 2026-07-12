@@ -29,6 +29,13 @@
       "when": 1783791301466,
       "tag": "0003_m3_prices_reactions_calendar",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783871353248,
+      "tag": "0004_m4_signals_trading",
+      "breakpoints": true
     }
   ]
 }
