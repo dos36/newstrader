@@ -533,5 +533,9 @@ export const fills = pgTable(
     filledAt: tz('filled_at').notNull(),
     isSimulated: boolean('is_simulated').notNull(),
   },
-  (t) => [index('fills_order_idx').on(t.orderId)],
+  // UNIQUE, not just indexed: v1 is market-only, so one order fills AT MOST
+  // once (SimBroker's placeOrder inserts exactly one fills row per order).
+  // Drop this when partial fills arrive (M7+) and an order can accumulate
+  // more than one fill.
+  (t) => [uniqueIndex('fills_order_id_unique').on(t.orderId)],
 );

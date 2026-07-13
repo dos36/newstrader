@@ -1,29 +1,49 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { allAdapters, FsRawStore } from '@newstrader/adapters';
+import {
+  DEFAULT_RULES_LABEL,
+  decide,
+  formatDec,
+  mul,
+  parseDec,
+  roundTo,
+  sub,
+} from '@newstrader/core';
 import type { RawStore, SourceAdapter } from '@newstrader/core';
 import {
   backfillEventWindows,
   closeStaleClusters,
+  compareRuns,
   createDb,
+  createReplayRun,
+  decideSignals,
   defaultCalendarDeps,
+  derivePortfolio,
   ensureBenchmarks,
   ensureDailyBars,
+  ensureDefaultRules,
+  evaluateOpenPositions,
   fetchAggsBars,
   fetchKrakenOhlc,
   fetchSecTickerMap,
   fetchSnapshotMinuteBars,
   fetchSp500FromWikipedia,
+  getReplayRunRulesLabel,
+  getRulesVersion,
+  LIVE_RUN,
   loadResolverDictionary,
   measureReactions,
   recordSnapshot,
   resolveUnlinkedItems,
+  runReplay,
   syncCalendar,
   syncUniverse,
 } from '@newstrader/db';
 import type {
   BackfillDeps,
   Db,
+  DecideSignalsTotals,
   EnsureDailyBarsDeps,
   MassiveBarsOptions,
   RecordSnapshotDeps,
@@ -37,15 +57,27 @@ import {
   runPoll,
   runProcess,
 } from '../../handlers/src/lib/ingest.js';
+import {
+  cliKillSwitch,
+  engineExitEvaluator,
+  loadPendingOpenIntents,
+  loadSimPortfolioFills,
+  resolveEngineVersion,
+  simBrokerFromEnv,
+} from '../../handlers/src/lib/trading.js';
 import { printStats } from './stats.js';
 
 /**
- * NewsTrader milestone-0/1 CLI: run the same ingest core the Lambdas run, but
- * locally — FsRawStore instead of S3, a direct DATABASE_URL instead of the
- * Secrets Manager secret, and `process` finds work by query instead of SQS.
+ * NewsTrader CLI: run the same cores the Lambdas run, but locally — FsRawStore
+ * instead of S3, a direct DATABASE_URL instead of the Secrets Manager secret,
+ * work found by query instead of SQS, and the kill switch read from the
+ * NEWSTRADER_KILL_SWITCH env var instead of SSM.
  * M1 adds the universe/dictionary layer: `universe:sync` maintains
  * instruments/membership/aliases, `process` resolves items as it clusters
  * them, and `resolve` backfills items ingested before the dictionary existed.
+ * M4 adds the trading path (VENUE IS SIM ONLY): `rules:init`/`decide`/
+ * `positions`/`manage` drive the pure engine + SimBroker, `replay`/
+ * `replay:compare` re-execute the stored signal log under any rules version.
  * Config comes from .env via dotenv (see .env.example).
  */
 
@@ -361,10 +393,292 @@ program
   });
 
 program
+  .command('rules:init')
+  .description(
+    "Seed the shipped v1 default rules version ('v1-conservative': long-only, EMPTY event-type " +
+      'whitelist — trades NOTHING until evidence earns entries). Idempotent; a drifted default ' +
+      'under the same label throws (rules are immutable — ship changes as a new label).',
+  )
+  .action(async () => {
+    await withDb(async (db) => {
+      const record = await ensureDefaultRules(db);
+      console.log(
+        `rules version ${record.created ? 'created' : 'already present'}: ` +
+          `label=${record.label} hash=${record.configHash} id=${record.id}`,
+      );
+    });
+  });
+
+program
+  .command('decide')
+  .option('--rules <label>', 'rules version label', DEFAULT_RULES_LABEL)
+  .option('--batch <n>', 'signals per pass', '200')
+  .option('--execute', 'place pending open intents through the SimBroker (venue: sim ONLY)')
+  .description(
+    'Run the pure decision engine over every undecided llm_signals row (recording one decisions ' +
+      'row per signal, skips included), then list the open intents still awaiting an order. ' +
+      'Kill switch: NEWSTRADER_KILL_SWITCH=halt records decisions suppressed and emits nothing ' +
+      '(or, with KILL_SWITCH_SSM_PARAM set, the deployed SSM parameter — any read failure halts).',
+  )
+  .action(async (options: { rules: string; batch: string; execute?: boolean }) => {
+    const batch = parsePositiveInt(options.batch, '--batch');
+    await withDb(async (db) => {
+      if (options.rules === DEFAULT_RULES_LABEL) await ensureDefaultRules(db);
+      const broker = simBrokerFromEnv(db);
+      const killSwitch = await cliKillSwitch(); // env-backed locally, or SSM when KILL_SWITCH_SSM_PARAM is set
+      const engineVersion = resolveEngineVersion();
+
+      const totals: Omit<DecideSignalsTotals, 'intents'> = {
+        examined: 0,
+        decided: 0,
+        opens: 0,
+        skips: 0,
+        suppressed: 0,
+      };
+      for (;;) {
+        const pass = await decideSignals(
+          db,
+          { decide, broker, killSwitchHalted: killSwitch.halted, engineVersion },
+          { rulesLabel: options.rules, batch },
+        );
+        totals.examined += pass.examined;
+        totals.decided += pass.decided;
+        totals.opens += pass.opens;
+        totals.skips += pass.skips;
+        totals.suppressed += pass.suppressed;
+        if (pass.examined < batch) break; // drained: every decided signal leaves the set
+      }
+      console.table([{ ...totals, 'kill switch': killSwitch.state, engine: engineVersion }]);
+
+      if (killSwitch.halted) {
+        console.log('kill switch HALTED: decisions recorded suppressed; no intents emitted.');
+        return;
+      }
+      const rules = await getRulesVersion(db, options.rules);
+      const intents = await loadPendingOpenIntents(db, {
+        rulesVersionId: rules.id,
+        now: new Date(),
+      });
+      if (intents.length === 0) {
+        console.log('no pending open intents (every open decision already has an order).');
+        return;
+      }
+      console.log(`-- ${intents.length} pending open intent(s) --`);
+      console.table(
+        intents.map((intent) => ({
+          clientOrderId: intent.clientOrderId,
+          instrument: intent.instrumentId,
+          side: intent.side,
+          qty: intent.qty,
+        })),
+      );
+      if (options.execute !== true) {
+        console.log('(dry run — pass --execute to place these through the SimBroker)');
+        return;
+      }
+      // Execution re-checks the switch independently of decide (architecture §4.4).
+      if ((await cliKillSwitch()).halted) {
+        console.log('kill switch HALTED at execution time: no orders placed.');
+        return;
+      }
+      for (const intent of intents) {
+        const ack = await broker.placeOrder(intent);
+        console.log(
+          `[execute] ${intent.side} ${intent.qty} ${intent.instrumentId}: ${ack.status}` +
+            `${ack.reason !== undefined ? ` (${ack.reason})` : ''} order=${ack.brokerOrderId}`,
+        );
+      }
+    });
+  });
+
+program
+  .command('positions')
+  .description(
+    'Derived open positions (from sim fills — no mutable positions table), account state, ' +
+      'unrealized P&L per position, and realized P&L / fees across all closed quantity',
+  )
+  .action(async () => {
+    await withDb(async (db) => {
+      const broker = simBrokerFromEnv(db);
+      const positions = await broker.getPositions();
+      const account = await broker.getAccountState();
+      const portfolio = derivePortfolio(await loadSimPortfolioFills(db));
+      if (positions.length === 0) {
+        console.log('no open positions.');
+      } else {
+        const rows = [];
+        for (const position of positions) {
+          const mark = await latestCloseFor(db, position.instrumentId);
+          // Signed qty × (mark − avg entry) marks longs and shorts correctly.
+          const unrealized =
+            mark === null
+              ? '—'
+              : formatDec(
+                  roundTo(
+                    mul(
+                      parseDec(position.qty),
+                      sub(parseDec(mark), parseDec(position.avgEntryPrice)),
+                    ),
+                    2,
+                  ),
+                );
+          rows.push({
+            instrument: await symbolFor(db, position.instrumentId),
+            qty: position.qty,
+            'avg entry': position.avgEntryPrice,
+            mark: mark ?? '—',
+            'unrealized P&L': unrealized,
+          });
+        }
+        console.table(rows);
+      }
+      console.table([
+        {
+          'cash USD': account.cashUsd,
+          'equity USD': account.equityUsd,
+          'realized P&L': portfolio.realizedPnlUsd,
+          'fees paid': portfolio.feesUsd,
+        },
+      ]);
+    });
+  });
+
+program
+  .command('manage')
+  .option(
+    '--rules <label>',
+    'rules version the close decisions are recorded under',
+    DEFAULT_RULES_LABEL,
+  )
+  .description(
+    'One position-manager pass: evaluate every open position against the exit policy ' +
+      '(time stop at the signal horizon, stop-loss/take-profit in ATR multiples) and close ' +
+      'through the SimBroker. Exits are recorded as replayable action=close decisions. ' +
+      'Kill switch: NEWSTRADER_KILL_SWITCH, or KILL_SWITCH_SSM_PARAM for the deployed SSM parameter.',
+  )
+  .action(async (options: { rules: string }) => {
+    await withDb(async (db) => {
+      if (options.rules === DEFAULT_RULES_LABEL) await ensureDefaultRules(db);
+      const rules = await getRulesVersion(db, options.rules);
+      const result = await evaluateOpenPositions(db, {
+        broker: simBrokerFromEnv(db),
+        rules: rules.config,
+        rulesVersionId: rules.id,
+        now: new Date(),
+        evaluateExit: engineExitEvaluator,
+        checkHalted: async () => (await cliKillSwitch()).halted,
+      });
+      console.table([
+        {
+          evaluated: result.evaluated,
+          closed: result.closed,
+          suppressed: result.suppressed,
+          skipped: result.skipped,
+        },
+      ]);
+      if (result.details.length > 0) console.table(result.details);
+    });
+  });
+
+program
+  .command('replay')
+  .requiredOption('--rules <label>', 'rules version to replay under')
+  .option('--from <iso>', 'signals window start (analyzed_at, inclusive)')
+  .option('--to <iso>', 'signals window end (inclusive)')
+  .option('--notes <text>', 'free-form note stored on the replay run')
+  .description(
+    'Replay the stored signal log under a rules version, re-executing decide() from each ' +
+      "signal's snapshotted features/quote (never live queries). Replaying the LIVE rules " +
+      'version must reproduce live decisions bit-for-bit (Mode A).',
+  )
+  .action(async (options: { rules: string; from?: string; to?: string; notes?: string }) => {
+    await withDb(async (db) => {
+      const run = await createReplayRun(db, {
+        rulesLabel: options.rules,
+        from: options.from === undefined ? null : parseIsoDate(options.from, '--from'),
+        to: options.to === undefined ? null : parseIsoDate(options.to, '--to'),
+        notes: options.notes ?? null,
+      });
+      const totals = await runReplay(db, { decide }, { replayRunId: run.id });
+      console.log(`replay run: ${run.id}`);
+      console.table([totals]);
+      if (totals.modeBUnsoundPortfolioFeatures) {
+        console.log(
+          "WARNING: this run's rules label differs from the label that produced the live " +
+            'decisions it reused. Portfolio features (openPositionsCount / paperEquityUsd) were ' +
+            'copied from the LIVE run, not recomputed for this label — this replay is Mode B and ' +
+            'its results may not reflect what this rules version would actually have done. ' +
+            'See the mode_b_unsound_portfolio_features log line above for the labels involved.',
+        );
+      }
+      console.log(`compare with: pnpm cli replay:compare --a live --b ${run.id}`);
+    });
+  });
+
+program
+  .command('replay:compare')
+  .requiredOption('--a <run>', "replay run id, or 'live' for live paper decisions")
+  .requiredOption('--b <run>', "replay run id, or 'live'")
+  .option(
+    '--live-rules <label>',
+    "rules label to scope the 'live' side to when comparing against it " +
+      "(default: the OTHER side's own rules label)",
+  )
+  .description(
+    'Per-signal join of two runs: matched counts plus every divergence ' +
+      '(action / size / skip-reason changes)',
+  )
+  .action(async (options: { a: string; b: string; liveRules?: string }) => {
+    await withDb(async (db) => {
+      let liveRulesVersionId: string | undefined;
+      if (options.a === LIVE_RUN || options.b === LIVE_RUN) {
+        const otherRun = options.a === LIVE_RUN ? options.b : options.a;
+        const label =
+          options.liveRules ??
+          (otherRun === LIVE_RUN ? undefined : await getReplayRunRulesLabel(db, otherRun));
+        if (label === undefined) {
+          throw new Error(
+            'replay:compare: --live-rules is required when comparing live against live ' +
+              '(there is no other run to default the label from)',
+          );
+        }
+        liveRulesVersionId = (await getRulesVersion(db, label)).id;
+      }
+      const result = await compareRuns(db, {
+        runA: options.a,
+        runB: options.b,
+        ...(liveRulesVersionId !== undefined ? { liveRulesVersionId } : {}),
+      });
+      console.table([result.summary]);
+      if (result.divergences.length === 0) {
+        console.log('no divergences.');
+        return;
+      }
+      const MAX_ROWS = 50;
+      console.table(
+        result.divergences.slice(0, MAX_ROWS).map((divergence) => ({
+          signal: divergence.signalId,
+          reasons: divergence.reasons.join(','),
+          'a action': divergence.a.action,
+          'b action': divergence.b.action,
+          'a skip': divergence.a.skipReason ?? '—',
+          'b skip': divergence.b.skipReason ?? '—',
+          'a qty': divergence.a.sizedQty ?? '—',
+          'b qty': divergence.b.sizedQty ?? '—',
+        })),
+      );
+      if (result.divergences.length > MAX_ROWS) {
+        console.log(`(+${result.divergences.length - MAX_ROWS} more divergences not shown)`);
+      }
+    });
+  });
+
+program
   .command('stats')
   .description(
     'KPIs: items/day by source, dedup ratio, top clusters, clusters/day, resolution coverage, ' +
-      'reaction ladder + alpha-decay medians (last 7d), upcoming calendar events',
+      'reaction ladder + alpha-decay medians (last 7d), upcoming calendar events, and the ' +
+      'trading section (decisions by action, open positions, paper equity, realized P&L)',
   )
   .action(async () => {
     await withDb(printStats);
@@ -441,6 +755,23 @@ async function pollCycle(
     }
   }
   return failed;
+}
+
+/** Latest recorded bar close for the instrument (any age — honest paper mark). */
+async function latestCloseFor(db: Db, instrumentId: string): Promise<string | null> {
+  const result = await db.$client.query<{ close: string }>(
+    'select close from price_bars_1m where instrument_id = $1 order by ts desc limit 1',
+    [instrumentId],
+  );
+  return result.rows[0]?.close ?? null;
+}
+
+async function symbolFor(db: Db, instrumentId: string): Promise<string> {
+  const result = await db.$client.query<{ symbol: string }>(
+    'select symbol from instruments where id = $1',
+    [instrumentId],
+  );
+  return result.rows[0]?.symbol ?? instrumentId;
 }
 
 function parsePositiveInt(value: string, flag: string): number {

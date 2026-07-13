@@ -1,5 +1,6 @@
-import { MIN_LINK_CONFIDENCE } from '@newstrader/db';
+import { MIN_LINK_CONFIDENCE, derivePortfolio } from '@newstrader/db';
 import type { Db } from '@newstrader/db';
+import { loadSimPortfolioFills, simBrokerFromEnv } from '../../handlers/src/lib/trading.js';
 
 /**
  * The M0/M1 KPI report (architecture §10 verification gates): how much comes
@@ -31,6 +32,8 @@ type AlphaDecayRow = {
 };
 type UnmeasuredRow = { pairs_unmeasured: number };
 type CalendarRow = { kind: string; events: number; next_at: string };
+type DecisionActionRow = { action: string; decisions: number; suppressed: number };
+type SkipReasonRow = { skip_reason: string; skips: number };
 
 export async function printStats(db: Db): Promise<void> {
   const [itemsPerDay, totals, topClusters, clustersPerDay, coverage, methods, topInstruments] =
@@ -212,6 +215,65 @@ export async function printStats(db: Db): Promise<void> {
   } else {
     console.table(calendar.rows);
   }
+
+  await printTradingSection(db);
+}
+
+/**
+ * M4 trading KPIs: live decision mix (the M4 verification gate wants a
+ * skip-reason distribution that is neither ~0% nor ~100% traded), open
+ * positions, paper equity, and realized P&L. All live rows only — replay
+ * runs are compared via `replay:compare`, not mixed into KPIs.
+ */
+async function printTradingSection(db: Db): Promise<void> {
+  const [actions, skipReasons] = await Promise.all([
+    db.$client.query<DecisionActionRow>(
+      `select action,
+              count(*)::int as decisions,
+              count(*) filter (where suppressed)::int as suppressed
+         from decisions
+        where replay_run_id is null
+          and decided_at >= now() - interval '7 days'
+        group by action
+        order by action`,
+    ),
+    db.$client.query<SkipReasonRow>(
+      `select coalesce(skip_reason, '(none)') as skip_reason, count(*)::int as skips
+         from decisions
+        where replay_run_id is null
+          and action = 'skip'
+          and decided_at >= now() - interval '7 days'
+        group by 1
+        order by 2 desc
+        limit 8`,
+    ),
+  ]);
+
+  const broker = simBrokerFromEnv(db);
+  const positions = await broker.getPositions();
+  const account = await broker.getAccountState();
+  const portfolio = derivePortfolio(await loadSimPortfolioFills(db));
+
+  console.log('\n== Trading (venue: sim ONLY) ==');
+  if (actions.rows.length === 0) {
+    console.log('(no live decisions in the last 7 days — run `decide` once signals exist)');
+  } else {
+    console.log('-- live decisions by action (last 7d) --');
+    console.table(actions.rows);
+    if (skipReasons.rows.length > 0) {
+      console.log('-- skip reasons (last 7d) --');
+      console.table(skipReasons.rows);
+    }
+  }
+  console.table([
+    {
+      'open positions': positions.length,
+      'paper equity USD': account.equityUsd,
+      'cash USD': account.cashUsd,
+      'realized P&L': portfolio.realizedPnlUsd,
+      'fees paid': portfolio.feesUsd,
+    },
+  ]);
 }
 
 /** One line: measured pairs, the 1d abnormal-move median, and the not-yet-measured backlog. */

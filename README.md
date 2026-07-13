@@ -4,14 +4,17 @@ A personal research system that measures whether LLM news interpretation has a t
 profit is the hypothesis, not the assumption. Paper-trading only. The full design is in
 [docs/newstrader-architecture.md](docs/newstrader-architecture.md); read it before changing anything.
 
-**Current state: milestone 3** — ingestion + clustering + entity resolution + price recording +
-reaction analytics + scheduled-event calendars. Zero LLM spend, no broker code. Pollers pull SEC
-EDGAR, Massive (ex-Polygon) news, and RSS feeds into an immutable raw store + Postgres; a
-deterministic clusterer collapses echoes of the same story into clusters; a deterministic resolver
-links each item to the instruments it is about (S&P 500 point-in-time universe + BTC/ETH/SOL);
-price bars are recorded/backfilled around every clustered story; and a nightly measurer turns
-(cluster, instrument) pairs into abnormal-return ladders, alpha-decay summaries, and recovery
-metrics.
+**Current state: milestone 4** — ingestion + clustering + entity resolution + price recording +
+reaction analytics + scheduled-event calendars + the deterministic decision engine with SimBroker
+paper execution and replay. Zero LLM spend (`llm_signals` stays empty until M2 populates it), and
+**venue is SIM ONLY** — the only broker is an internal fill simulator over recorded bars; there is
+no real-money code path. Pollers pull SEC EDGAR, Massive (ex-Polygon) news, and RSS feeds into an
+immutable raw store + Postgres; a deterministic clusterer collapses echoes of the same story into
+clusters; a deterministic resolver links each item to the instruments it is about (S&P 500
+point-in-time universe + BTC/ETH/SOL); price bars are recorded/backfilled around every clustered
+story; a nightly measurer turns (cluster, instrument) pairs into abnormal-return ladders,
+alpha-decay summaries, and recovery metrics; and the pure `decide()` engine turns signals into
+fully-recorded decisions, sim orders, and replayable exits.
 
 ## What milestone 0 measures, and why
 
@@ -78,6 +81,60 @@ and, once `FINNHUB_API_KEY` is set, the Finnhub earnings calendar for current S&
 into `scheduled_events`. The pure `isScheduledEvent` matcher gives decide() (M4) its ground truth
 for calibrating the LLM's `already_expected` judgment.
 
+## Milestone 4: the decision engine, SimBroker, and replay
+
+**The engine is a pure function; everything it read is snapshotted (architecture §5.4).**
+`decide(signal, features, quote, config)` lives in `packages/core/src/decide` with no I/O, no
+clock, and no randomness — every input arrives as a parameter, and the decide driver
+(`packages/db/src/trading`) writes the full features/quote/gates snapshot onto each `decisions`
+row, skips included. Every signal in a batch also sees whatever the SAME batch has already
+opened — not just the broker snapshot from batch start — so two same-instrument signals (or N
+signals across instruments) in one pass can never jointly evade the `no_existing_position` /
+`maxConcurrentPositions` gates.
+
+**Replay Mode A vs Mode B.** `replay --rules <label>` re-executes the engine from the
+features/quote_snapshot stored on each signal's LIVE decision, never from live queries; replaying
+the SAME label the live decisions were produced under (Mode A) must reproduce them bit-for-bit
+(CI-gated, including one real-engine assertion in the CLI e2e suite — not just the stub engine
+in the DB package's own regression test). Replaying a DIFFERENT label (Mode B) reuses the SAME
+portfolio features (open positions, equity) the live run actually saw, which a different rules
+version's own trajectory would NOT have produced — `replay` prints a visible warning
+(`mode_b_unsound_portfolio_features`) when this applies, rather than presenting Mode-B results as
+trustworthy. `replay:compare --a <run|live> --b <run|live>` diffs any two runs (action / size /
+skip-reason changes); a `live` side is scoped to one rules version via `--live-rules <label>`
+(defaults to the other side's own label).
+
+**The default rules trade NOTHING — on purpose.** `rules:init` seeds `v1-conservative`: long-only,
+with an EMPTY event-type whitelist. Entries into the whitelist are earned by event-study evidence
+from the reaction analytics (§6), shipped as NEW immutable `rules_versions` rows — re-registering
+a label with a different config throws.
+
+**Execution is SIM ONLY and idempotent end to end.** The SimBroker fills market orders at the
+latest recorded bar close ± 5 bps adverse slippage (fees: 0 bps equities, 26 bps crypto), and
+positions/P&L are always DERIVED from the append-only `fills` — no mutable positions table.
+`clientOrderId` is a hash of the decision key, so a redelivered queue message or a re-run CLI
+command can never double-order; the broker also refuses (throws on) any intent whose decision
+turns out to be a replay row, not a live one. The scheduled position manager evaluates every open
+position against the exit policy (time stop at the signal's horizon, stop-loss in ATR multiples)
+and records exits as replayable `action=close` decisions under a REASON-independent key
+(`exit:<openingOrderId>`, the reason lives in `features.exitReason`) — two evaluators racing to
+different verdicts on the same position can mint at most one close order, never two that could
+both fill and flip the position short. A rejected close retries under a new attempt-suffixed
+`clientOrderId` (same sha256 namespace as entries) up to 3 attempts before the position manager
+logs a structured error and waits for a human.
+
+**The kill switch halts orders, never research.** `decide`, `execute`, and `position-manager` read
+it independently (SSM `/newstrader/kill-switch` in Lambdas with a ≤30 s cache, `NEWSTRADER_KILL_SWITCH`
+locally); when halted, decisions are still recorded with `suppressed=true` and nothing is enqueued
+or placed. Unrecognized values halt (fail-closed). Suppressed entries never fire later; suppressed
+exits re-fire on the first pass after the switch clears. Operating the CLI against a DEPLOYED
+database requires `KILL_SWITCH_SSM_PARAM=/newstrader/kill-switch` in the environment — with it
+set, `decide`/`manage` read the real SSM parameter instead of the local `NEWSTRADER_KILL_SWITCH`
+env var, and ANY read failure (network, IAM, missing parameter) halts rather than falling through
+to "just trade". The parameter itself is NOT CDK-managed (a template change would otherwise
+silently un-trip a manual `halt` on every redeploy) — create it once:
+`aws ssm put-parameter --name /newstrader/kill-switch --value run --type String`.
+
 ## Quickstart
 
 ```bash
@@ -95,7 +152,10 @@ pnpm cli resolve          # backfill instrument links for items ingested before 
 pnpm cli bars:backfill    # benchmarks + daily bars + minute bars around recent stories (3d default)
 pnpm cli calendar:sync    # FOMC/CPI/NFP/GDP/PCE (+ earnings with FINNHUB_API_KEY) → scheduled_events
 pnpm cli measure          # reaction ladder + summaries + recovery over the last 7d of clusters
-pnpm cli stats            # the KPI report (ingest, resolution, reaction, calendar)
+pnpm cli rules:init       # seed the v1-conservative rules version (trades nothing by design)
+pnpm cli decide           # decide every undecided signal (expect examined=0 until M2 lands)
+pnpm cli positions        # derived open positions + paper account state
+pnpm cli stats            # the KPI report (ingest, resolution, reaction, calendar, trading)
 ```
 
 Without any keys in `.env` the four RSS presets (GlobeNewswire, CoinDesk, Cointelegraph, The Block)
@@ -104,31 +164,37 @@ news. Raw payloads land under `./data/raw/` locally (S3 when deployed).
 
 ### CLI commands
 
-| Command                                       | What it does                                                                                    |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `pnpm cli sources:seed`                       | Upsert `news_sources` rows for every enabled adapter, print the table                           |
-| `pnpm cli universe:sync`                      | Sync instruments (S&P 500 + crypto), point-in-time SPX membership, alias dictionary             |
-| `pnpm cli poll [sourceKey] [--loop <s>]`      | One poll cycle (or forever with `--loop`): cursor → fetch → raw store → `raw_news_items`        |
-| `pnpm cli process [--batch <n>]`              | Attach unclustered items to clusters + resolve them to instruments, close stale clusters        |
-| `pnpm cli resolve [--batch <n>]`              | Backfill `item_instrument_links` for every raw item without an r1 link                          |
-| `pnpm cli bars:record [--loop <s>]`           | One bars-recorder tick: Massive full-market snapshot + Kraken OHLC → `price_bars_1m`            |
-| `pnpm cli bars:backfill [--from/--to/--days]` | Benchmarks + daily bars (beta window) + event-window minute bars via aggregates                 |
-| `pnpm cli calendar:sync [--horizon-days <n>]` | Macro + earnings calendars → `scheduled_events` (90d forward window by default)                 |
-| `pnpm cli measure [--since-hours <n>]`        | Reaction ladder / summary / recovery for clusters first seen in the window (default 168h)       |
-| `pnpm cli stats`                              | Items/day, dedup ratio, clusters, resolution coverage, reaction + alpha-decay medians, calendar |
-| `pnpm cli db:ping`                            | Connect + `SELECT 1`                                                                            |
+| Command                                                                          | What it does                                                                                                            |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `pnpm cli sources:seed`                                                          | Upsert `news_sources` rows for every enabled adapter, print the table                                                   |
+| `pnpm cli universe:sync`                                                         | Sync instruments (S&P 500 + crypto), point-in-time SPX membership, alias dictionary                                     |
+| `pnpm cli poll [sourceKey] [--loop <s>]`                                         | One poll cycle (or forever with `--loop`): cursor → fetch → raw store → `raw_news_items`                                |
+| `pnpm cli process [--batch <n>]`                                                 | Attach unclustered items to clusters + resolve them to instruments, close stale clusters                                |
+| `pnpm cli resolve [--batch <n>]`                                                 | Backfill `item_instrument_links` for every raw item without an r1 link                                                  |
+| `pnpm cli bars:record [--loop <s>]`                                              | One bars-recorder tick: Massive full-market snapshot + Kraken OHLC → `price_bars_1m`                                    |
+| `pnpm cli bars:backfill [--from/--to/--days]`                                    | Benchmarks + daily bars (beta window) + event-window minute bars via aggregates                                         |
+| `pnpm cli calendar:sync [--horizon-days <n>]`                                    | Macro + earnings calendars → `scheduled_events` (90d forward window by default)                                         |
+| `pnpm cli measure [--since-hours <n>]`                                           | Reaction ladder / summary / recovery for clusters first seen in the window (default 168h)                               |
+| `pnpm cli rules:init`                                                            | Seed the shipped default rules version (long-only, empty whitelist — trades nothing)                                    |
+| `pnpm cli decide [--rules/--batch/--execute]`                                    | Engine over undecided signals → decisions rows; `--execute` places pending intents (sim)                                |
+| `pnpm cli positions`                                                             | Derived positions, account state, unrealized + realized P&L (from sim fills)                                            |
+| `pnpm cli manage [--rules <label>]`                                              | One position-manager pass: exit evaluation → replayable `action=close` decisions                                        |
+| `pnpm cli replay --rules <label> [--from/--to]`                                  | Replay the stored signal log under a rules version (Mode A: live label ⇒ bit-for-bit; warns on Mode B)                  |
+| `pnpm cli replay:compare --a <run\|live> --b <run\|live> [--live-rules <label>]` | Per-signal divergence report between two runs (`--live-rules` scopes a `live` side; defaults to the other side's label) |
+| `pnpm cli stats`                                                                 | Items/day, dedup ratio, clusters, resolution coverage, reaction + alpha-decay medians, calendar, trading                |
+| `pnpm cli db:ping`                                                               | Connect + `SELECT 1`                                                                                                    |
 
 ## Repo layout
 
-| Path                | Contents                                                                                                                                                                                                                                                                                                                                |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `docs/`             | The approved architecture (the contract everything must match)                                                                                                                                                                                                                                                                          |
-| `packages/core`     | Zod message contracts (`RawItemV1`), ids/hashing, pure similarity helpers — zero AWS imports                                                                                                                                                                                                                                            |
-| `packages/db`       | Drizzle schema, migrations, advisory-locked clustering repo, `universe/` (S&P 500 + SEC + aliases sync), `resolver/` (dictionary matcher + link persistence), `bars/` (Massive/Kraken clients + immutable bar repo), `reaction/` (abnormal-return math + measurer), `calendar/` (macro/earnings schedules + `already_expected` matcher) |
-| `packages/adapters` | `SourceAdapter` implementations (EDGAR, Massive, RSS) + `FsRawStore`                                                                                                                                                                                                                                                                    |
-| `services/handlers` | Lambda entries (`poll.ts`, `process.ts`, `bars-record.ts`, `calendar-sync.ts`, `measure.ts`, `universe-sync.ts`, `resolve-sweep.ts`) and `lib/` — the shared ingest core both the CLI and Lambdas run, plus `S3RawStore` and a minimal SigV4/SSM/Secrets client                                                                         |
-| `services/cli`      | `newstrader` CLI (`main.ts`) + the end-to-end fixture test                                                                                                                                                                                                                                                                              |
-| `infra/`            | CDK stacks: data (RDS/S3), ingest (schedulers → pollers → SQS → process), analytics (bars/calendar/measure/universe/resolve schedules), ops (alarms, budget, kill switch)                                                                                                                                                               |
+| Path                | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/`             | The approved architecture (the contract everything must match)                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `packages/core`     | Zod message contracts (`RawItemV1`), M4 trading contracts, ids/hashing, pure similarity helpers, `decide/` (the pure decision engine: gates, fixed-point sizing, exit rules), `broker/` (the pure SimBroker fill model) — zero AWS imports, zero I/O in the engine                                                                                                                                                                                                                  |
+| `packages/db`       | Drizzle schema, migrations, advisory-locked clustering repo, `universe/` (S&P 500 + SEC + aliases sync), `resolver/` (dictionary matcher + link persistence), `bars/` (Massive/Kraken clients + immutable bar repo), `reaction/` (abnormal-return math + measurer), `calendar/` (macro/earnings schedules + `already_expected` matcher), `trading/` (signals/rules repos, decide driver, replay), `execution/` (SimBrokerAdapter, derived positions, position manager, kill switch) |
+| `packages/adapters` | `SourceAdapter` implementations (EDGAR, Massive, RSS) + `FsRawStore`                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `services/handlers` | Lambda entries (`poll.ts`, `process.ts`, `bars-record.ts`, `calendar-sync.ts`, `measure.ts`, `universe-sync.ts`, `resolve-sweep.ts`, `decide-sweep.ts`, `execute.ts`, `position-manager.ts`) and `lib/` — the shared ingest/trading cores both the CLI and Lambdas run, plus `S3RawStore` and a minimal SigV4/SSM/Secrets client                                                                                                                                                    |
+| `services/cli`      | `newstrader` CLI (`main.ts`) + the end-to-end fixture tests (ingest→measure and signal→decide→fill→close)                                                                                                                                                                                                                                                                                                                                                                           |
+| `infra/`            | CDK stacks: data (RDS/S3), ingest (schedulers → pollers → SQS → process), analytics (bars/calendar/measure/universe/resolve schedules), trading (decide-sweep → q-orders → execute + position-manager; SIM venue only), ops (alarms, budget, kill switch)                                                                                                                                                                                                                           |
 
 One flow, two runners: EventBridge → poller Lambda → S3 + Postgres → SQS → process Lambda in AWS;
 the CLI runs the exact same `runPoll`/`runProcess` core against the local filesystem and DB.
@@ -156,11 +222,23 @@ race on truncation; the connection user needs `CREATEDB` (the docker-compose sup
 The CDK app in `infra/` deploys the pollers on 1–2 min schedules plus the analytics jobs:
 bars-record every minute (24/7 — crypto trades weekends; off-hours equity snapshots no-op on the
 conflict-do-nothing upsert), universe-sync and calendar-sync daily, measure nightly, resolve-sweep
-hourly. One-time prerequisites: create the SSM SecureStrings (`/newstrader/edgar-user-agent`,
-`/newstrader/massive-api-key`, and optionally `/newstrader/finnhub-api-key` — until it exists the
-calendar sync warn-skips earnings) and pass the `DbAllowlistCidr` / `AlertEmail` parameters — see
-the comments in `infra/lib/*.ts`. Lambdas assemble `DATABASE_URL` from the RDS secret at cold
-start; it is never stored in Lambda env.
+hourly. The trading stack adds decide-sweep every 5 min → q-orders → execute (batch 5, partial
+batch failures, kill switch re-checked at execution) and the position manager every 15 min — all
+sim-venue only, with DLQ/staleness/error alarms on the ops topic and `ENGINE_VERSION` stamped
+from the git SHA at synth. One-time prerequisites: create the SSM SecureStrings
+(`/newstrader/edgar-user-agent`, `/newstrader/massive-api-key`, and optionally
+`/newstrader/finnhub-api-key` — until it exists the calendar sync warn-skips earnings), create the
+kill-switch parameter (`aws ssm put-parameter --name /newstrader/kill-switch --value run --type String` —
+NOT CDK-managed, see the OpsStack comment: a managed `StringParameter` would silently un-trip a
+manual halt on every unrelated redeploy), and pass the `DbAllowlistCidr` / `AlertEmail` parameters
+— see the comments in `infra/lib/*.ts`. Lambdas assemble `DATABASE_URL` from the RDS secret at cold
+start; it is never stored in Lambda env. Trip the kill switch with
+`aws ssm put-parameter --name /newstrader/kill-switch --value halt --overwrite`.
+
+Operating the CLI (`pnpm cli decide` / `pnpm cli manage`) against the DEPLOYED database — as
+opposed to local dev, which reads `NEWSTRADER_KILL_SWITCH` — requires
+`KILL_SWITCH_SSM_PARAM=/newstrader/kill-switch` in the environment so the CLI reads the same SSM
+parameter the Lambdas do, with the same fail-closed guarantee (any read failure halts).
 
 **Known entitlement gap:** the Massive full-market snapshot endpoint needs the Stocks Starter
 subscription active on the key. Until it is, every bars-record tick fails loudly (status

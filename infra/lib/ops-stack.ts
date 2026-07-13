@@ -6,7 +6,6 @@ import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import type * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 import type * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 
@@ -32,17 +31,25 @@ export class OpsStack extends Stack {
     super(scope, id, props);
 
     // -------------------------------------------------------- kill switch ----
-    // Read by decide/execute each invocation from M4+ (<=30s cache). Values:
-    // 'run' | 'halt'. Trip it manually with:
-    //   aws ssm put-parameter --name /newstrader/kill-switch --value halt --overwrite
-    // CloudFormation only rewrites the value if the TEMPLATE changes, so a
-    // manual 'halt' survives ordinary redeploys of this stack.
-    new ssm.StringParameter(this, 'KillSwitch', {
-      parameterName: '/newstrader/kill-switch',
-      stringValue: 'run',
-      description:
-        "newstrader kill switch: 'run' | 'halt'. decide/execute check it every invocation.",
-    });
+    // /newstrader/kill-switch, read by decide/execute/position-manager every
+    // invocation from M4+ (<=30s cache). Values: 'run' | 'halt'.
+    //
+    // DELIBERATELY NOT a CDK-managed resource: an ssm.StringParameter here
+    // would make every template change (any field in this stack, not just
+    // this one) rewrite stringValue back to 'run' — CloudFormation updates a
+    // parameter resource whenever its owning stack's template changes, which
+    // would silently un-trip an operator's manual 'halt' on the next
+    // unrelated redeploy. TradingStack already grants ssm:GetParameter by
+    // ARN (a literal string, not a reference to a CDK resource here), so
+    // removing the resource does not touch IAM.
+    //
+    // One-time operator setup (mirrors the manual edgar-user-agent /
+    // massive-api-key SecureStrings — see the README/ingest-stack comments):
+    //   aws ssm put-parameter --name /newstrader/kill-switch --value run --type String
+    // Lambdas already fail closed when the parameter is missing entirely
+    // (readKillSwitchFromSsm throws, crashing the invocation before any
+    // order can be placed); this is about protecting a value that DOES
+    // exist from being clobbered back to 'run' by an unrelated deploy.
 
     // --------------------------------------------------------- SNS + email ----
     const alertEmail = new CfnParameter(this, 'AlertEmail', {

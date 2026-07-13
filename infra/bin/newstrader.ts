@@ -8,6 +8,7 @@ import { AnalyticsStack } from '../lib/analytics-stack.js';
 import { DataStack } from '../lib/data-stack.js';
 import { IngestStack } from '../lib/ingest-stack.js';
 import { OpsStack } from '../lib/ops-stack.js';
+import { TradingStack } from '../lib/trading-stack.js';
 
 /**
  * Make the workspace esbuild executable for NodejsFunction's local bundling.
@@ -76,6 +77,16 @@ const ops = new OpsStack(app, 'NewstraderOps', {
 // Errors>=1 alarms, not the ops-stack error-rate shape) but route to the same
 // ops SNS topic.
 new AnalyticsStack(app, 'NewstraderAnalytics', {
+  env,
+  dbSecret: data.dbSecret,
+  databaseName: data.databaseName,
+  alarmTopic: ops.alarmTopic,
+});
+
+// M4/M5 trading pipeline: decide-sweep -> q-orders -> execute + the position
+// manager. VENUE IS SIM ONLY (paper) — see the stack header. Depends on the
+// ops stack for the alarm topic and the kill-switch SSM parameter it reads.
+new TradingStack(app, 'NewstraderTrading', {
   env,
   dbSecret: data.dbSecret,
   databaseName: data.databaseName,

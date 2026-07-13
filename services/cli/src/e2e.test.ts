@@ -6,31 +6,49 @@ import type {
   FetchResult,
   RawItemV1,
   RawStore,
+  RulesConfig,
   SourceAdapter,
 } from '@newstrader/core';
-import { newId } from '@newstrader/core';
+import { DEFAULT_RULES_LABEL, decide, newId } from '@newstrader/core';
 import {
   CONFIDENCE,
+  compareRuns,
   createDb,
+  createReplayRun,
+  createRulesVersion,
+  decideSignals,
+  decisions,
+  derivePortfolio,
+  ensureDefaultRules,
+  evaluateOpenPositions,
+  fills,
   indexMembership,
   ingestWatermarks,
   instrumentAliases,
   instruments,
   itemInstrumentLinks,
+  llmSignals,
   loadResolverDictionary,
   MEASURER_VERSION,
   measureReactions,
   newsClusterItems,
   newsClusters,
   newsSources,
+  orderEvents,
+  orders,
+  persistSignal,
   priceBars1d,
   priceBars1m,
   rawNewsItems,
   reactionMeasurements,
   reactionSummary,
   recoveryMeasurements,
+  replayRuns,
   RESOLVER_VERSION,
+  rulesVersions,
+  runReplay,
   scheduledEvents,
+  SimBrokerAdapter,
   upsertBars1m,
 } from '@newstrader/db';
 import type { BarUpsertRow, Db } from '@newstrader/db';
@@ -41,6 +59,11 @@ import {
   runPoll,
   runProcess,
 } from '../../handlers/src/lib/ingest.js';
+import {
+  engineExitEvaluator,
+  loadPendingOpenIntents,
+  loadSimPortfolioFills,
+} from '../../handlers/src/lib/trading.js';
 
 /**
  * End-to-end fixture test of the shared ingest core: fake in-memory adapters +
@@ -439,17 +462,403 @@ describe.skipIf(!testDatabaseUrl)('ingest e2e: fixtures → poll → process →
   });
 });
 
+describe.skipIf(!testDatabaseUrl)('trading e2e: signal → decide → fill → time-stop close', () => {
+  let db: Db;
+
+  /** All trading fixtures anchor here (cluster first_received_at — OUR clock). */
+  const ANCHOR = new Date('2026-07-06T12:00:00.000Z');
+  const HOUR_MS = 3_600_000;
+  const DAY_MS = 86_400_000;
+  /** Engine decision time: two hours after the story broke. */
+  const DECIDE_NOW = new Date(ANCHOR.getTime() + 2 * HOUR_MS);
+  /** Exit pass time: past the signal's 1d horizon from the entry decision. */
+  const CLOSE_NOW = new Date(DECIDE_NOW.getTime() + 25 * HOUR_MS);
+
+  const EVENT_TYPE = 'earnings_surprise';
+  const ENGINE_VERSION = 'e2e-engine';
+
+  /**
+   * Explicit TEST config whose whitelist earns the fixture event type — the
+   * shipped default trades NOTHING (empty whitelist) by design, so every test
+   * that wants a trade must say so out loud.
+   */
+  const E2E_RULES: RulesConfig = {
+    gates: {
+      minConfidence: 0.75,
+      rejectAlreadyExpected: true,
+      rejectCalendarMatch: true,
+      eventTypeWhitelist: [EVENT_TYPE],
+      staleMoveMaxBps: 300,
+      minMedianDollarVolume: 5_000_000,
+      maxConcurrentPositions: 10,
+      allowShorts: false,
+    },
+    sizing: {
+      riskBpsOfEquity: 50,
+      atrLookbackDays: 5,
+      atrStopMultiple: 2,
+      maxPositionNotionalPct: 0.1,
+    },
+    exits: { defaultTimeStopHorizon: '3d', stopAtrMultiple: 2, takeProfitAtrMultiple: null },
+  };
+
+  beforeAll(async () => {
+    if (testDatabaseUrl === undefined)
+      throw new Error('unreachable: suite is skipped without TEST_DATABASE_URL');
+    const e2eUrl = await createE2eDatabase(testDatabaseUrl);
+    migrateDatabase(e2eUrl);
+    db = createDb(e2eUrl);
+  }, 120_000);
+
+  afterAll(async () => {
+    try {
+      await wipeIngestTables(db);
+    } finally {
+      await db.$client.end();
+    }
+  });
+
+  beforeEach(async () => {
+    await wipeIngestTables(db);
+  });
+
+  /**
+   * Seed one tradeable world: instrument + cluster + a bullish high-confidence
+   * signal, 20 daily bars (constant true range 4 ⇒ ATR exactly 4; $100M/day
+   * dollar volume), a settled anchor bar at 100, and a decision-time bar at
+   * 101 (+100 bps since anchor — inside the stale-move gate).
+   */
+  async function seedTradingWorld(): Promise<{ instrumentId: string; signalId: string }> {
+    const instrumentId = newId();
+    await db
+      .insert(instruments)
+      .values({ id: instrumentId, symbol: 'ACME', assetClass: 'us_equity', name: 'Acme Corp' });
+
+    const clusterId = newId();
+    await db.insert(newsClusters).values({
+      id: clusterId,
+      canonicalHeadline: 'Acme Corp reports record earnings',
+      normalizedHeadline: 'acme corp reports record earnings',
+      firstItemId: newId(),
+      firstSourceId: newId(),
+      firstReceivedAt: ANCHOR,
+      itemCount: 1,
+      distinctSourceCount: 1,
+      lastItemAt: ANCHOR,
+    });
+
+    const signal = await persistSignal(db, {
+      clusterId,
+      scope: 'company',
+      instrumentId,
+      eventType: EVENT_TYPE,
+      direction: 'bullish',
+      expectedMoveBps: 150,
+      horizon: '1d',
+      alreadyExpected: false,
+      materiality: 0.8,
+      confidence: 0.9,
+      modelId: 'e2e-model',
+      promptVersion: 'p1',
+      analyzedAt: new Date(ANCHOR.getTime() + 5 * 60_000),
+    });
+
+    // Daily bars: high 102 / low 98 / close 100 every day ⇒ every true range
+    // is exactly 4, so Wilder smoothing lands on ATR = 4 regardless of warmup.
+    for (let day = 20; day >= 1; day -= 1) {
+      await db.insert(priceBars1d).values({
+        instrumentId,
+        ts: new Date(ANCHOR.getTime() - day * DAY_MS),
+        open: '100',
+        high: '102',
+        low: '98',
+        close: '100',
+        volume: '1000000',
+        source: 'e2e',
+      });
+    }
+
+    await db.insert(priceBars1m).values([
+      // Settled anchor bar — the stale-move reference price.
+      {
+        instrumentId,
+        ts: ANCHOR,
+        open: '100',
+        high: '100',
+        low: '100',
+        close: '100',
+        source: 'e2e',
+      },
+      // Decision-time quote bar.
+      {
+        instrumentId,
+        ts: new Date(DECIDE_NOW.getTime() - 60_000),
+        open: '101',
+        high: '101',
+        low: '101',
+        close: '101',
+        source: 'e2e',
+      },
+    ]);
+
+    return { instrumentId, signalId: signal.id };
+  }
+
+  function brokerAt(now: Date): SimBrokerAdapter {
+    return new SimBrokerAdapter(db, { now: () => now });
+  }
+
+  it('flows a signal end-to-end: decide → intent → fill → position → time-stop close → P&L', async () => {
+    const { instrumentId, signalId } = await seedTradingWorld();
+    const rules = await createRulesVersion(db, { label: 'e2e-earnings-v1', config: E2E_RULES });
+
+    // --- decide (real engine, real feature assembly) --------------------------
+    const broker = brokerAt(DECIDE_NOW);
+    const totals = await decideSignals(
+      db,
+      {
+        decide,
+        broker,
+        killSwitchHalted: false,
+        engineVersion: ENGINE_VERSION,
+        now: () => DECIDE_NOW,
+      },
+      { rulesLabel: 'e2e-earnings-v1', batch: 10 },
+    );
+    expect(totals).toMatchObject({ examined: 1, decided: 1, opens: 1, skips: 0, suppressed: 0 });
+    expect(totals.intents).toHaveLength(1);
+    const intent = totals.intents[0];
+    if (intent === undefined) throw new Error('intent missing');
+    // Sizing math: risk = 100000 × 50bps = $500; stop = 2 × ATR(4) = 8;
+    // 500 / 8 = 62.5 → floored to whole shares for equities.
+    expect(intent).toMatchObject({ side: 'buy', qty: '62', assetClass: 'us_equity' });
+
+    // The durable emit path re-derives the SAME intent from the decisions row.
+    const pending = await loadPendingOpenIntents(db, {
+      rulesVersionId: rules.id,
+      now: DECIDE_NOW,
+    });
+    expect(pending.map((p) => p.clientOrderId)).toEqual([intent.clientOrderId]);
+
+    // The decision row snapshotted what the engine read (replay contract).
+    const [decision] = await db.select().from(decisions);
+    expect(decision).toMatchObject({
+      signalId,
+      action: 'open_long',
+      suppressed: false,
+      replayRunId: null,
+    });
+    expect(decision?.features).toMatchObject({ engineVersion: ENGINE_VERSION, atr: '4' });
+
+    // --- execute (SimBroker fill: 5 bps adverse slippage on the 101 quote) ----
+    const ack = await broker.placeOrder(intent);
+    expect(ack.status).toBe('accepted');
+    const positions = await broker.getPositions();
+    expect(positions).toEqual([{ instrumentId, qty: '62', avgEntryPrice: '101.0505' }]);
+    // Once ordered, the intent is no longer pending (idempotent emit path).
+    expect(await loadPendingOpenIntents(db, { rulesVersionId: rules.id, now: DECIDE_NOW })).toEqual(
+      [],
+    );
+
+    // --- position manager: past the 1d horizon, the time stop closes ----------
+    await db.insert(priceBars1m).values({
+      instrumentId,
+      ts: new Date(CLOSE_NOW.getTime() - 60_000),
+      open: '103',
+      high: '103',
+      low: '103',
+      close: '103',
+      source: 'e2e',
+    });
+    const closeBroker = brokerAt(CLOSE_NOW);
+    const result = await evaluateOpenPositions(db, {
+      broker: closeBroker,
+      rules: E2E_RULES,
+      rulesVersionId: rules.id,
+      now: CLOSE_NOW,
+      evaluateExit: engineExitEvaluator,
+      checkHalted: async () => false,
+    });
+    expect(result).toMatchObject({ evaluated: 1, closed: 1, suppressed: 0, skipped: 0 });
+    expect(result.details[0]).toMatchObject({ outcome: 'closed', reason: 'time_stop' });
+
+    // --- aftermath: flat, and the P&L is the exact slippage-adjusted number ---
+    expect(await closeBroker.getPositions()).toEqual([]);
+    const portfolio = derivePortfolio(await loadSimPortfolioFills(db));
+    // Buy 62 @ 101×1.0005 = 101.0505 → 6265.131; sell 62 @ 103×0.9995 =
+    // 102.9485 → 6382.807; realized = 117.676 (equity fees are 0 in sim).
+    expect(portfolio.realizedPnlUsd).toBe('117.676');
+    expect(portfolio.feesUsd).toBe('0');
+    expect(await db.select().from(orders)).toHaveLength(2);
+    expect(await db.select().from(fills)).toHaveLength(2);
+    const closeDecisions = await db.select().from(decisions);
+    const close = closeDecisions.find((row) => row.action === 'close');
+    // REASON-INDEPENDENT key (position-manager.ts) — the reason lives in
+    // features.exitReason, not the key.
+    expect(close?.decisionKey).toMatch(/^exit:[^:]+$/);
+    expect(close?.features).toMatchObject({ exitReason: 'time_stop' });
+    expect(close?.suppressed).toBe(false);
+  });
+
+  it('Mode A bit-for-bit CI gate: replaying the REAL engine under the SAME rules label reproduces the live decision exactly', async () => {
+    // decide-repo.test.ts's own Mode A regression uses a stub engine both
+    // sides — this proves the jsonb round-trip of REAL features/gates (this
+    // fixture's real decide(), real assembled features, real fill) survives
+    // re-execution bit-for-bit, not just a stub's trivial output.
+    await seedTradingWorld();
+    const rules = await createRulesVersion(db, { label: 'e2e-mode-a-v1', config: E2E_RULES });
+
+    await decideSignals(
+      db,
+      {
+        decide,
+        broker: brokerAt(DECIDE_NOW),
+        killSwitchHalted: false,
+        engineVersion: ENGINE_VERSION,
+        now: () => DECIDE_NOW,
+      },
+      { rulesLabel: 'e2e-mode-a-v1', batch: 10 },
+    );
+
+    const run = await createReplayRun(db, {
+      rulesLabel: 'e2e-mode-a-v1',
+      from: null,
+      to: null,
+      notes: 'mode-a-ci-gate',
+    });
+    const replayTotals = await runReplay(db, { decide }, { replayRunId: run.id });
+    expect(replayTotals).toMatchObject({
+      examined: 1,
+      decided: 1,
+      opens: 1,
+      skippedNoSnapshot: 0,
+      modeBUnsoundPortfolioFeatures: false, // same label as the live decision — Mode A
+    });
+
+    const comparison = await compareRuns(db, {
+      runA: 'live',
+      runB: run.id,
+      liveRulesVersionId: rules.id,
+    });
+    expect(comparison.summary).toEqual({
+      total: 1,
+      matched: 1,
+      actionChanged: 0,
+      sizeChanged: 0,
+      skipReasonChanged: 0,
+      onlyInA: 0,
+      onlyInB: 0,
+    });
+    expect(comparison.divergences).toEqual([]);
+  });
+
+  it('decide-sweep contract: the pending-intents cutoff must be taken AFTER decideSignals, or a freshly-decided open is invisible to the same pass', async () => {
+    const { instrumentId } = await seedTradingWorld();
+    const rules = await createRulesVersion(db, { label: 'sweep-contract-v1', config: E2E_RULES });
+
+    const totals = await decideSignals(
+      db,
+      {
+        decide,
+        broker: brokerAt(DECIDE_NOW),
+        killSwitchHalted: false,
+        engineVersion: ENGINE_VERSION,
+        now: () => DECIDE_NOW,
+      },
+      { rulesLabel: 'sweep-contract-v1', batch: 10 },
+    );
+    expect(totals.opens).toBe(1);
+
+    // The OLD (buggy) decide-sweep minted its `now` cutoff BEFORE calling
+    // decideSignals — strictly older than this decision's decided_at.
+    const staleCutoff = new Date(DECIDE_NOW.getTime() - 1);
+    expect(
+      await loadPendingOpenIntents(db, { rulesVersionId: rules.id, now: staleCutoff }),
+    ).toEqual([]);
+
+    // The FIXED decide-sweep mints its cutoff AFTER decideSignals returns —
+    // at or after decided_at — so the same pass's enqueue sees the open.
+    const freshCutoff = DECIDE_NOW;
+    const pending = await loadPendingOpenIntents(db, {
+      rulesVersionId: rules.id,
+      now: freshCutoff,
+    });
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ instrumentId });
+  });
+
+  it('trades NOTHING under the shipped default rules (empty whitelist)', async () => {
+    await seedTradingWorld();
+    await ensureDefaultRules(db);
+
+    const totals = await decideSignals(
+      db,
+      {
+        decide,
+        broker: brokerAt(DECIDE_NOW),
+        killSwitchHalted: false,
+        engineVersion: ENGINE_VERSION,
+        now: () => DECIDE_NOW,
+      },
+      { rulesLabel: DEFAULT_RULES_LABEL, batch: 10 },
+    );
+    expect(totals).toMatchObject({ examined: 1, decided: 1, opens: 0, skips: 1 });
+    expect(totals.intents).toEqual([]);
+
+    const [decision] = await db.select().from(decisions);
+    expect(decision).toMatchObject({ action: 'skip', skipReason: 'event_type_whitelist' });
+    expect(await db.select().from(orders)).toHaveLength(0);
+  });
+
+  it('kill switch: decision recorded suppressed, zero orders, nothing pending', async () => {
+    await seedTradingWorld();
+    const rules = await createRulesVersion(db, { label: 'e2e-earnings-v1', config: E2E_RULES });
+
+    const totals = await decideSignals(
+      db,
+      {
+        decide,
+        broker: brokerAt(DECIDE_NOW),
+        killSwitchHalted: true, // tripped switch, observed by the caller this invocation
+        engineVersion: ENGINE_VERSION,
+        now: () => DECIDE_NOW,
+      },
+      { rulesLabel: 'e2e-earnings-v1', batch: 10 },
+    );
+    // Research data never stops: the open decision IS recorded — suppressed.
+    expect(totals).toMatchObject({ examined: 1, decided: 1, opens: 1, suppressed: 1 });
+    expect(totals.intents).toEqual([]);
+
+    const [decision] = await db.select().from(decisions);
+    expect(decision).toMatchObject({ action: 'open_long', suppressed: true });
+    expect(await db.select().from(orders)).toHaveLength(0);
+    // Suppressed decisions never re-emit, even after the switch clears.
+    expect(await loadPendingOpenIntents(db, { rulesVersionId: rules.id, now: DECIDE_NOW })).toEqual(
+      [],
+    );
+  });
+});
+
 // ------------------------------------------------------------------ helpers --
 
 /**
  * FK-safe wipe of every table the ingest pipeline writes or the tests seed,
- * in dependency order: memberships → clusters → instrument links → raw items
- * → watermarks → sources, then the universe tables (aliases and index
- * membership before the instruments they reference). Only ever pointed at
- * this suite's dedicated e2e database.
+ * in dependency order: the M4 trading tables first (fills → order events →
+ * orders → decisions → replay runs → rules versions → signals — they
+ * reference clusters and instruments), then memberships → clusters →
+ * instrument links → raw items → watermarks → sources, then the universe
+ * tables (aliases and index membership before the instruments they
+ * reference). Only ever pointed at this suite's dedicated e2e database.
  */
 async function wipeIngestTables(db: Db): Promise<void> {
-  // M3 derived/fact tables first: they reference clusters and instruments.
+  await db.delete(fills);
+  await db.delete(orderEvents);
+  await db.delete(orders);
+  await db.delete(decisions);
+  await db.delete(replayRuns);
+  await db.delete(rulesVersions);
+  await db.delete(llmSignals);
+  // M3 derived/fact tables next: they reference clusters and instruments.
   await db.delete(reactionMeasurements);
   await db.delete(reactionSummary);
   await db.delete(recoveryMeasurements);

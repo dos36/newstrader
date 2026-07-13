@@ -20,6 +20,20 @@ export async function enqueueRawItems(
   queueUrl: string,
   messages: readonly RawItemV1[],
 ): Promise<void> {
+  await enqueueJsonMessages(client, queueUrl, messages);
+}
+
+/**
+ * Enqueue arbitrary JSON-serializable bodies (RawItemV1 pointers to q-items,
+ * OrderIntents to q-orders), SQS_BATCH_MAX at a time, throwing on any reported
+ * per-entry failure. Callers rely on at-least-once + consumer idempotency
+ * (architecture §4.2), so "throw and let the producer re-emit" is always safe.
+ */
+export async function enqueueJsonMessages(
+  client: SqsClientLike,
+  queueUrl: string,
+  messages: readonly unknown[],
+): Promise<void> {
   for (const batch of chunk(messages, SQS_BATCH_MAX)) {
     const response = await client.send(
       new SendMessageBatchCommand({

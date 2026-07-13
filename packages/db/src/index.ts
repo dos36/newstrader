@@ -7,3 +7,11 @@ export * from './bars/index.js';
 export * from './reaction/index.js';
 export * from './calendar/index.js';
 export * from './shared-constants.js';
+// M4: signal/rules/decision/replay orchestration + SimBroker execution.
+// No export-name overlap with the barrels above (verified — an overlap would
+// silently drop the name from the package surface, like the http.js seams).
+// Note: execution/position-manager.ts exports its own ExitEvaluation type;
+// core's decide/exit-rules.ts exports an identically NAMED interface, but the
+// two live in different packages, so both survive their respective indexes.
+export * from './trading/index.js';
+export * from './execution/index.js';
