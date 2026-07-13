@@ -93,6 +93,7 @@ export class EdgarAdapter implements SourceAdapter {
     // Page deeper only while chasing a known cursor; a null cursor is the
     // baseline poll — one page establishes the watermark.
     const pageBudget = cursor === null ? 1 : this.maxPages;
+    let entriesSeen = 0;
     while (pages < pageBudget) {
       const xml = await fetchText(this.fetchImpl, this.pageUrl(pages * this.count), {
         headers: {
@@ -102,6 +103,7 @@ export class EdgarAdapter implements SourceAdapter {
       });
       const page = this.parsePage(xml, cursor);
       pages += 1;
+      entriesSeen += page.entryCount;
       if (newestAccession === null) newestAccession = page.newestAccession;
       for (const item of page.itemsNewestFirst) {
         // Entries can shift between page fetches when new filings land mid-poll.
@@ -119,7 +121,11 @@ export class EdgarAdapter implements SourceAdapter {
       }
     }
 
-    if (cursor !== null && !cursorFound) {
+    // An EMPTY feed proves nothing was missed — getcurrent cannot scroll past
+    // filings it never showed. Quiet weekends empty the low-volume form feeds
+    // (13D/13G) for days, and warning every poll cycle trained operators to
+    // ignore the log line that matters on busy days.
+    if (cursor !== null && !cursorFound && entriesSeen > 0) {
       // Not necessarily data loss (a stale cursor ages out of getcurrent after
       // quiet weekends), but at a 1-min cadence it usually means >maxPages*count
       // filings since last poll. Logged so M0 measures overflow instead of
@@ -131,6 +137,7 @@ export class EdgarAdapter implements SourceAdapter {
           sourceKey: this.sourceKey,
           reason: feedExhausted ? 'feed_exhausted' : 'page_cap',
           pages,
+          entriesSeen,
         }),
       );
     }

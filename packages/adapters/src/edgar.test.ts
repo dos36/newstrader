@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { FetchedItem } from '@newstrader/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { EDGAR_FORM_TYPES, EdgarAdapter, edgarAdapters } from './edgar.js';
 import type { FetchLike } from './http.js';
@@ -138,5 +138,35 @@ describe('EdgarAdapter cursor', () => {
     const result = adapter().parseFeed(empty, NEWEST);
     expect(result.items).toHaveLength(0);
     expect(result.nextCursor).toBe(NEWEST);
+  });
+
+  it('does not warn cursor-not-found on an EMPTY feed (quiet weekends)', async () => {
+    // An empty feed proves nothing was missed; warning every poll cycle for
+    // days trained operators to ignore the overflow signal that matters.
+    const empty = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>';
+    const warns: unknown[] = [];
+    const spy = vi.spyOn(console, 'warn').mockImplementation((line) => void warns.push(line));
+    try {
+      const { items, nextCursor } = await adapter(stubFetch(empty)).fetchSince(NEWEST);
+      expect(items).toHaveLength(0);
+      expect(nextCursor).toBe(NEWEST);
+      expect(warns).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('still warns cursor-not-found when the feed HAS entries but not the cursor', async () => {
+    const warns: string[] = [];
+    const spy = vi
+      .spyOn(console, 'warn')
+      .mockImplementation((line) => void warns.push(String(line)));
+    try {
+      await adapter(stubFetch(fixture)).fetchSince('0000000000-99-000001');
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('edgar_cursor_not_found');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
