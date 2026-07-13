@@ -103,6 +103,7 @@ describe.skipIf(!testDatabaseUrl)('reaction measure repo (integration)', () => {
       confidence: number;
       method: 'cik_exact' | 'ticker_exact' | 'source_hint' | 'alias_dict' | 'llm_ner';
     }[],
+    publishedAt?: Date,
   ): Promise<string> {
     const itemId = newId();
     const headline = `reaction fixture ${itemId}`;
@@ -114,6 +115,7 @@ describe.skipIf(!testDatabaseUrl)('reaction measure repo (integration)', () => {
       payloadRef: `test/${itemId}.json`,
       contentHash: contentHash(headline),
       receivedAt: anchor,
+      publishedAt: publishedAt ?? null,
     });
     const clusterId = newId();
     await db.insert(newsClusters).values({
@@ -307,6 +309,10 @@ describe.skipIf(!testDatabaseUrl)('reaction measure repo (integration)', () => {
       measured: 2, // RCTX + BTC
       skippedNoBars: 1, // RCNB
       horizonsWritten: 14, // 8 equity + 6 BTC
+      pubPairs: 0, // fixture items carry no published_at → no m1-pub view
+      pubMeasured: 0,
+      pubSkippedNoBars: 0,
+      pubSkippedNoAnchor: 3,
     });
 
     // Equity ladder: every horizon, raw values from the seeded closes, flat
@@ -408,6 +414,10 @@ describe.skipIf(!testDatabaseUrl)('reaction measure repo (integration)', () => {
       measured: 2, // still recomputed…
       skippedNoBars: 1,
       horizonsWritten: 0, // …but every row already exists under this version
+      pubPairs: 0,
+      pubMeasured: 0,
+      pubSkippedNoBars: 0,
+      pubSkippedNoAnchor: 3,
     });
     expect(await db.select().from(reactionMeasurements)).toHaveLength(14);
     expect(await db.select().from(reactionSummary)).toHaveLength(2);
@@ -423,6 +433,10 @@ describe.skipIf(!testDatabaseUrl)('reaction measure repo (integration)', () => {
       measured: 0,
       skippedNoBars: 0,
       horizonsWritten: 0,
+      pubPairs: 0,
+      pubMeasured: 0,
+      pubSkippedNoBars: 0,
+      pubSkippedNoAnchor: 0,
     });
     expect(await db.select().from(reactionMeasurements)).toHaveLength(0);
   });
@@ -442,8 +456,69 @@ describe.skipIf(!testDatabaseUrl)('reaction measure repo (integration)', () => {
       measured: 0,
       skippedNoBars: 0,
       horizonsWritten: 0,
+      pubPairs: 0,
+      pubMeasured: 0,
+      pubSkippedNoBars: 0,
+      pubSkippedNoAnchor: 0,
     });
     expect(await db.select().from(reactionMeasurements)).toHaveLength(0);
+  });
+
+  it('writes a publication-anchored m1-pub view when published_at is credible', async () => {
+    const instrumentId = await seedInstrument('RCPB', 'crypto');
+    const pubAnchor = new Date(ANCHOR.getTime() - 3 * 60_000); // published 3 min before receipt
+    await seedClusterWithLinks(
+      ANCHOR,
+      [{ instrumentId, confidence: 1, method: 'cik_exact' }],
+      pubAnchor,
+    );
+    // Bars from 5 min BEFORE receipt: they cover the pub anchor too, and the
+    // move differs by clock — 100→101 from pub (bar -5m), 100.5→101 from receipt.
+    await seedMinuteBars(instrumentId, ANCHOR, [
+      [-5, '100.000000'],
+      [-1, '100.500000'],
+      [1440, '101.000000'],
+    ]);
+
+    const totals = await measureReactions(db, { sinceHours: SINCE_HOURS, now: NOW });
+    expect(totals.pubPairs).toBe(1);
+    expect(totals.pubMeasured).toBe(1);
+    expect(totals.pubSkippedNoAnchor).toBe(0);
+
+    const rows = await db.select().from(reactionMeasurements);
+    const m1 = rows.filter((row) => row.measurerVersion === 'm1');
+    const m1pub = rows.filter((row) => row.measurerVersion === 'm1-pub');
+    expect(m1.length).toBeGreaterThan(0);
+    expect(m1pub.length).toBeGreaterThan(0);
+    // The pub rows anchor on the PUBLICATION claim, not our receipt clock.
+    expect(m1pub[0]?.anchorTs).toEqual(pubAnchor);
+    expect(m1[0]?.anchorTs).toEqual(ANCHOR);
+    // Different anchor bar → different measured move (the latency cost, made visible).
+    const m1Day = m1.find((row) => row.horizon === '1d');
+    const pubDay = m1pub.find((row) => row.horizon === '1d');
+    expect(m1Day?.rawReturnBps).not.toBeCloseTo(pubDay?.rawReturnBps ?? Number.NaN, 3);
+  });
+
+  it('skips the m1-pub view when the published_at claim is implausible', async () => {
+    const instrumentId = await seedInstrument('RCPX', 'crypto');
+    // Claims publication 10 minutes AFTER we received it — beyond clock skew.
+    const bogus = new Date(ANCHOR.getTime() + 10 * 60_000);
+    await seedClusterWithLinks(
+      ANCHOR,
+      [{ instrumentId, confidence: 1, method: 'cik_exact' }],
+      bogus,
+    );
+    await seedMinuteBars(instrumentId, ANCHOR, [
+      [-1, '100.000000'],
+      [1440, '101.000000'],
+    ]);
+
+    const totals = await measureReactions(db, { sinceHours: SINCE_HOURS, now: NOW });
+    expect(totals.measured).toBe(1); // the tradeable view still runs
+    expect(totals.pubPairs).toBe(0);
+    expect(totals.pubSkippedNoAnchor).toBe(1);
+    const rows = await db.select().from(reactionMeasurements);
+    expect(rows.every((row) => row.measurerVersion === 'm1')).toBe(true);
   });
 
   it('admits a 0.8-confidence crypto-keyword link that the old 0.85 threshold excluded', async () => {

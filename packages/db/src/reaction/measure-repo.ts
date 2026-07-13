@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, lte, or } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNotNull, lte, or, sql } from 'drizzle-orm';
 
 import { BENCHMARK_SYMBOLS } from '../bars/benchmarks.js';
 import type { Db } from '../client.js';
@@ -10,6 +10,7 @@ import {
   newsClusters,
   priceBars1d,
   priceBars1m,
+  rawNewsItems,
   reactionMeasurements,
   reactionSummary,
   recoveryMeasurements,
@@ -47,6 +48,23 @@ import {
 
 export const MEASURER_VERSION = 'm1';
 
+/**
+ * Publication-anchored variant: the SAME ladder/summary/recovery math anchored
+ * on the cluster's earliest credible published_at instead of first_received_at.
+ * Two clocks, two questions — m1 answers "what could WE have caught" (the only
+ * honest clock for anything trading-related; ingestion latency and outages are
+ * real and must show), m1-pub answers "what did the MARKET do after the news
+ * existed" (price bars carry exchange timestamps, so this is precise no matter
+ * when we fetched the story). The per-pair difference between the two curves
+ * IS the measured cost of our ingestion latency.
+ *
+ * published_at is a SOURCE CLAIM, so the pub anchor only exists when at least
+ * one cluster item's claim is credible: present, not after its own receipt
+ * (small clock-skew allowance), and not a stale re-serve (claims older than
+ * PUB_MAX_STALENESS_MS before receipt are republishing noise, not news).
+ */
+export const PUB_MEASURER_VERSION = 'm1-pub';
+
 // MIN_LINK_CONFIDENCE and BENCHMARK_SYMBOLS live in ../shared-constants.js and
 // ../bars/benchmarks.js respectively: both are also needed by
 // bars/bars-repo.ts's backfillEventWindows, and reaction/ may import bars/
@@ -77,6 +95,11 @@ const MINUTE_WINDOW_AFTER_MS = HORIZON_MINUTES['5d'] * MINUTE_MS + 3 * DAY_MS;
 /** Daily-bar lookback before the anchor for beta estimation. */
 const BETA_LOOKBACK_DAYS = 90;
 
+/** published_at may exceed the item's received_at by at most this (clock skew). */
+const PUB_MAX_CLOCK_SKEW_MS = 2 * MINUTE_MS;
+/** published_at older than this before receipt = stale re-serve, not news. */
+const PUB_MAX_STALENESS_MS = 24 * HOUR_MS;
+
 export interface MeasureReactionsOptions {
   /** Measure clusters whose first_received_at falls within the last N hours. */
   sinceHours: number;
@@ -93,8 +116,14 @@ export interface MeasureReactionsTotals {
   measured: number;
   /** Pairs skipped because no horizon was measurable (missing/unsettled bars). */
   skippedNoBars: number;
-  /** reaction_measurements rows actually inserted (0 on a pure re-run). */
+  /** reaction_measurements rows actually inserted, BOTH variants (0 on a pure re-run). */
   horizonsWritten: number;
+  /** Pairs attempted under the publication-anchored variant (m1-pub). */
+  pubPairs: number;
+  pubMeasured: number;
+  pubSkippedNoBars: number;
+  /** Pairs whose cluster carried no credible published_at claim. */
+  pubSkippedNoAnchor: number;
 }
 
 /**
@@ -123,12 +152,42 @@ export async function measureReactions(
     measured: 0,
     skippedNoBars: 0,
     horizonsWritten: 0,
+    pubPairs: 0,
+    pubMeasured: 0,
+    pubSkippedNoBars: 0,
+    pubSkippedNoAnchor: 0,
   };
   if (clusterRows.length === 0) {
     logTotals(totals);
     return totals;
   }
   const anchorByCluster = new Map(clusterRows.map((row) => [row.id, row.firstReceivedAt]));
+
+  // Publication anchor per cluster: earliest CREDIBLE published_at among the
+  // cluster's items. Credibility is judged per item against its own receipt
+  // (see PUB_MEASURER_VERSION doc); clusters with no credible claim simply
+  // have no m1-pub view.
+  const skewSecs = PUB_MAX_CLOCK_SKEW_MS / 1000;
+  const staleSecs = PUB_MAX_STALENESS_MS / 1000;
+  const pubAnchorRows = await db
+    .select({
+      clusterId: newsClusterItems.clusterId,
+      pubAnchor: sql<Date>`min(${rawNewsItems.publishedAt})`,
+    })
+    .from(newsClusterItems)
+    .innerJoin(rawNewsItems, eq(rawNewsItems.id, newsClusterItems.itemId))
+    .where(
+      and(
+        inArray(newsClusterItems.clusterId, [...anchorByCluster.keys()]),
+        isNotNull(rawNewsItems.publishedAt),
+        sql`${rawNewsItems.publishedAt} <= ${rawNewsItems.receivedAt} + make_interval(secs => ${skewSecs})`,
+        sql`${rawNewsItems.publishedAt} >= ${rawNewsItems.receivedAt} - make_interval(secs => ${staleSecs})`,
+      ),
+    )
+    .groupBy(newsClusterItems.clusterId);
+  const pubAnchorByCluster = new Map(
+    pubAnchorRows.map((row) => [row.clusterId, new Date(row.pubAnchor)]),
+  );
 
   const pairRows = await db
     .selectDistinct({
@@ -211,10 +270,15 @@ export async function measureReactions(
     return rows;
   };
 
-  for (const pair of pairRows) {
-    const anchor = anchorByCluster.get(pair.clusterId);
-    if (anchor === undefined) continue; // unreachable: pairs derive from clusterRows
-
+  /**
+   * Measure one (cluster, instrument) pair under one anchor/version. The math
+   * is identical across variants; only the starting clock differs.
+   */
+  const measurePair = async (
+    pair: (typeof pairRows)[number],
+    anchor: Date,
+    measurerVersion: string,
+  ): Promise<{ measured: boolean; horizonsWritten: number }> => {
     const benchmarkRow = benchmarkByClass.get(pair.assetClass);
     // The benchmark measured against itself (BTC) is raw-only by construction.
     const benchmark =
@@ -245,10 +309,8 @@ export async function measureReactions(
 
     const ladder = reactionLadder(anchor, bars, benchBars, betaValue, REACTION_HORIZONS);
     if (ladder.length === 0) {
-      totals.skippedNoBars += 1;
-      continue;
+      return { measured: false, horizonsWritten: 0 };
     }
-    totals.measured += 1;
     const barsSource = sources.length > 0 ? sources.join(',') : 'unknown';
 
     const insertedHorizons = await db
@@ -258,7 +320,7 @@ export async function measureReactions(
           clusterId: pair.clusterId,
           instrumentId: pair.instrumentId,
           horizon: row.horizon,
-          measurerVersion: MEASURER_VERSION,
+          measurerVersion,
           anchorTs: anchor,
           rawReturnBps: row.rawReturnBps,
           abnormalReturnBps: row.abnormalReturnBps,
@@ -269,12 +331,12 @@ export async function measureReactions(
       )
       .onConflictDoNothing()
       .returning({ horizon: reactionMeasurements.horizon });
-    totals.horizonsWritten += insertedHorizons.length;
+    const horizonsWritten = insertedHorizons.length;
 
     // Summary and recovery both key off the 1d horizon; writing them before 1d
     // is measurable would freeze a partial-day answer under conflict-do-nothing.
     const oneDayRow = ladder.find((row) => row.horizon === '1d');
-    if (oneDayRow === undefined) continue;
+    if (oneDayRow === undefined) return { measured: true, horizonsWritten };
 
     const summaryResult = summarize(
       anchor,
@@ -294,7 +356,7 @@ export async function measureReactions(
         .values({
           clusterId: pair.clusterId,
           instrumentId: pair.instrumentId,
-          measurerVersion: MEASURER_VERSION,
+          measurerVersion,
           anchorTs: anchor,
           peakAbnormalMoveBps: summaryResult.peakAbnormalMoveBps,
           timeToPeakMinutes: summaryResult.timeToPeakMinutes,
@@ -323,7 +385,7 @@ export async function measureReactions(
           .values({
             clusterId: pair.clusterId,
             instrumentId: pair.instrumentId,
-            measurerVersion: MEASURER_VERSION,
+            measurerVersion,
             anchorTs: anchor,
             troughBps: recoveryResult.troughBps,
             timeToTroughHours: recoveryResult.timeToTroughHours,
@@ -334,6 +396,31 @@ export async function measureReactions(
           .onConflictDoNothing();
       }
     }
+    return { measured: true, horizonsWritten };
+  };
+
+  for (const pair of pairRows) {
+    const anchor = anchorByCluster.get(pair.clusterId);
+    if (anchor === undefined) continue; // unreachable: pairs derive from clusterRows
+
+    // Tradeable view: our clock, warts (ingest latency, outages) and all.
+    const received = await measurePair(pair, anchor, MEASURER_VERSION);
+    if (received.measured) totals.measured += 1;
+    else totals.skippedNoBars += 1;
+    totals.horizonsWritten += received.horizonsWritten;
+
+    // Market view: the news's own clock, when the claim is credible. Bars are
+    // exchange-stamped, so this is precise regardless of our fetch cadence.
+    const pubAnchor = pubAnchorByCluster.get(pair.clusterId);
+    if (pubAnchor === undefined) {
+      totals.pubSkippedNoAnchor += 1;
+      continue;
+    }
+    totals.pubPairs += 1;
+    const published = await measurePair(pair, pubAnchor, PUB_MEASURER_VERSION);
+    if (published.measured) totals.pubMeasured += 1;
+    else totals.pubSkippedNoBars += 1;
+    totals.horizonsWritten += published.horizonsWritten;
   }
 
   logTotals(totals);

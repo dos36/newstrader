@@ -32,6 +32,14 @@ type AlphaDecayRow = {
 };
 type UnmeasuredRow = { pairs_unmeasured: number };
 type CalendarRow = { kind: string; events: number; next_at: string };
+type IngestLatencyRow = {
+  source_key: string;
+  items: number;
+  with_published: number;
+  implausible: number;
+  median_latency_s: string | null;
+  p90_latency_s: string | null;
+};
 type DecisionActionRow = { action: string; decisions: number; suppressed: number };
 type SkipReasonRow = { skip_reason: string; skips: number };
 
@@ -102,7 +110,7 @@ export async function printStats(db: Db): Promise<void> {
 
   // M3 sections. Separate Promise.all: these tables may be empty pre-M3 runs,
   // and grouping keeps the query list readable.
-  const [reactionOverview, alphaDecay, unmeasured, calendar] = await Promise.all([
+  const [reactionOverview, alphaDecay, unmeasured, calendar, ingestLatency] = await Promise.all([
     db.$client.query<ReactionOverviewRow>(
       `select count(distinct (cluster_id, instrument_id))::int as measured_pairs,
               percentile_cont(0.5) within group (order by abs(abnormal_return_bps))
@@ -150,6 +158,34 @@ export async function printStats(db: Db): Promise<void> {
         where scheduled_at between now() and now() + interval '7 days'
         group by kind
         order by kind`,
+    ),
+    // Ingest latency: received_at − published_at per source. The gap between
+    // the tradeable clock (m1) and the market clock (m1-pub); also the outage
+    // detector — a stalled poller shows up as a latency spike. "Credible" =
+    // the same plausibility window the m1-pub anchor uses.
+    db.$client.query<IngestLatencyRow>(
+      `select ns.source_key,
+              count(*)::int as items,
+              count(r.published_at)::int as with_published,
+              count(*) filter (where r.published_at > r.received_at + interval '2 minutes')::int
+                as implausible,
+              round((percentile_cont(0.5) within group
+                (order by extract(epoch from (r.received_at - r.published_at)))
+                filter (where r.published_at is not null
+                  and r.published_at <= r.received_at + interval '2 minutes'
+                  and r.published_at >= r.received_at - interval '24 hours'))::numeric, 0)
+                as median_latency_s,
+              round((percentile_cont(0.9) within group
+                (order by extract(epoch from (r.received_at - r.published_at)))
+                filter (where r.published_at is not null
+                  and r.published_at <= r.received_at + interval '2 minutes'
+                  and r.published_at >= r.received_at - interval '24 hours'))::numeric, 0)
+                as p90_latency_s
+         from raw_news_items r
+         join news_sources ns on ns.id = r.source_id
+        where r.received_at >= now() - interval '7 days'
+        group by ns.source_key
+        order by ns.source_key`,
     ),
   ]);
 
@@ -214,6 +250,23 @@ export async function printStats(db: Db): Promise<void> {
     console.log('(no upcoming scheduled events — run `calendar:sync`)');
   } else {
     console.table(calendar.rows);
+  }
+
+  console.log('== Ingest latency: received − published (last 7d) ==');
+  if (ingestLatency.rows.length === 0) {
+    console.log('(no items in the last 7 days)');
+  } else {
+    console.table(
+      ingestLatency.rows.map((row) => ({
+        source: row.source_key,
+        items: row.items,
+        'published %':
+          row.items === 0 ? '-' : `${((100 * row.with_published) / row.items).toFixed(0)}%`,
+        'median s': row.median_latency_s ?? '-',
+        'p90 s': row.p90_latency_s ?? '-',
+        implausible: row.implausible,
+      })),
+    );
   }
 
   await printTradingSection(db);

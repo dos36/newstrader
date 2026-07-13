@@ -421,6 +421,13 @@ describe.skipIf(!testDatabaseUrl)('ingest e2e: fixtures → poll → process →
       measured: 1,
       skippedNoBars: 0,
       horizonsWritten: 6, // 5m 15m 30m 1h 4h 1d; 3d/5d not yet settled
+      // The fixture's publishedAt (T0 − 1h) is credible, so the m1-pub view is
+      // attempted — but bars only start at T0 − 30m, so no anchor bar exists
+      // at the publication clock and the pub ladder is honestly empty.
+      pubPairs: 1,
+      pubMeasured: 0,
+      pubSkippedNoBars: 1,
+      pubSkippedNoAnchor: 0,
     });
 
     const ladder = await db.select().from(reactionMeasurements);
