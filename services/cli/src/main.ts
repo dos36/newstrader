@@ -149,46 +149,61 @@ program
 program
   .command('process')
   .option('--batch <n>', 'items per clustering batch', '500')
+  .option('--loop <seconds>', 'repeat forever with this many seconds between drain cycles')
   .description(
-    'Cluster every raw item not yet in news_cluster_items (oldest first), then close stale clusters',
+    'Cluster every raw item not yet in news_cluster_items (oldest first), then close stale ' +
+      'clusters. With --loop, keeps draining on an interval — the local stand-in for the ' +
+      'deployed process Lambda (run it alongside `poll --loop`).',
   )
-  .action(async (options: { batch: string }) => {
+  .action(async (options: { batch: string; loop?: string }) => {
     const batchSize = parsePositiveInt(options.batch, '--batch');
+    const loopSeconds =
+      options.loop === undefined ? undefined : parsePositiveInt(options.loop, '--loop');
     await withDb(async (db) => {
-      // One dictionary snapshot for the whole run — items arriving mid-run
-      // are resolved against it; the next run (or `resolve`) picks up any
-      // universe changes made meanwhile.
-      const dictionary = await loadResolverDictionary(db);
-      const totals = {
-        processed: 0,
-        newClusters: 0,
-        attachedExisting: 0,
-        itemsLinked: 0,
-        linksWritten: 0,
-      };
       for (;;) {
-        const items = await loadUnclusteredItems(db, batchSize);
-        if (items.length === 0) break;
-        const counts = await runProcess(db, items, dictionary);
-        totals.processed += counts.processed;
-        totals.newClusters += counts.newClusters;
-        totals.attachedExisting += counts.attachedExisting;
-        totals.itemsLinked += counts.itemsLinked;
-        totals.linksWritten += counts.linksWritten;
-        console.log(
-          `[process] batch: processed=${counts.processed} newClusters=${counts.newClusters} ` +
-            `attachedExisting=${counts.attachedExisting} itemsLinked=${counts.itemsLinked} ` +
-            `linksWritten=${counts.linksWritten}`,
-        );
+        await drainProcessBacklog(db, batchSize);
+        if (loopSeconds === undefined) return;
+        console.log(`[process] sleeping ${loopSeconds}s (ctrl-c to stop)`);
+        await sleep(loopSeconds * 1000);
       }
-      const closed = await closeStaleClusters(db);
-      console.log(
-        `[process] done: processed=${totals.processed} newClusters=${totals.newClusters} ` +
-          `attachedExisting=${totals.attachedExisting} itemsLinked=${totals.itemsLinked} ` +
-          `linksWritten=${totals.linksWritten} staleClustersClosed=${closed}`,
-      );
     });
   });
+
+/** One full drain: cluster+resolve every unclustered item, then close stale clusters. */
+async function drainProcessBacklog(db: Db, batchSize: number): Promise<void> {
+  // One dictionary snapshot per drain cycle — items arriving mid-cycle are
+  // resolved against it; the next cycle (or `resolve`) picks up any universe
+  // changes made meanwhile.
+  const dictionary = await loadResolverDictionary(db);
+  const totals = {
+    processed: 0,
+    newClusters: 0,
+    attachedExisting: 0,
+    itemsLinked: 0,
+    linksWritten: 0,
+  };
+  for (;;) {
+    const items = await loadUnclusteredItems(db, batchSize);
+    if (items.length === 0) break;
+    const counts = await runProcess(db, items, dictionary);
+    totals.processed += counts.processed;
+    totals.newClusters += counts.newClusters;
+    totals.attachedExisting += counts.attachedExisting;
+    totals.itemsLinked += counts.itemsLinked;
+    totals.linksWritten += counts.linksWritten;
+    console.log(
+      `[process] batch: processed=${counts.processed} newClusters=${counts.newClusters} ` +
+        `attachedExisting=${counts.attachedExisting} itemsLinked=${counts.itemsLinked} ` +
+        `linksWritten=${counts.linksWritten}`,
+    );
+  }
+  const closed = await closeStaleClusters(db);
+  console.log(
+    `[process] done: processed=${totals.processed} newClusters=${totals.newClusters} ` +
+      `attachedExisting=${totals.attachedExisting} itemsLinked=${totals.itemsLinked} ` +
+      `linksWritten=${totals.linksWritten} staleClustersClosed=${closed}`,
+  );
+}
 
 program
   .command('universe:sync')
