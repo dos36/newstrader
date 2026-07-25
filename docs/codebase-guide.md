@@ -1,6 +1,6 @@
 # NewsTrader — Codebase Guide
 
-_Verified against the tree on 2026-07-24 (579 tests across 48 files passing; 5 CDK stacks synth
+_Verified against the tree on 2026-07-24 (581 tests across 49 files passing; 5 CDK stacks synth
 clean). This is the **structural** doc: what exists, where it lives, and how to change it. For why
 the rules are what they are, read [`business-logic.md`](business-logic.md). For what is missing, read
 [`roadmap.md`](roadmap.md)._
@@ -115,15 +115,15 @@ The decision engine takes every input as a parameter so replay is bit-for-bit re
 
 **The `lib/` directory is the important part** — it is what the CLI and the Lambdas share.
 
-| File                             | Purpose                                                                                                                                                                     |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lib/ingest.ts`                  | `runPoll` and `runProcess` — the crash-safe ordering (raw store → DB row → enqueue → watermark) lives here                                                                  |
-| `lib/trading.ts`                 | SimBroker construction, engine-version resolution, pending-intent loading, the CLI's SSM kill-switch reader                                                                 |
-| `lib/boot.ts`                    | `lazyAsync` cold-start memoization, env contract helpers, the resolver-dictionary TTL cache                                                                                 |
-| `lib/queue.ts`                   | SQS batch enqueue; throws on any reported per-entry failure so producers re-emit                                                                                            |
-| `lib/aws-api.ts`, `lib/sigv4.ts` | Minimal hand-rolled SSM/Secrets/S3 access — avoids pulling large AWS SDK clients into every bundle                                                                          |
-| `lib/s3-raw-store.ts`            | The deployed `RawStore` implementation                                                                                                                                      |
-| Lambda entries                   | `poll.ts`, `process.ts`, `bars-record.ts`, `calendar-sync.ts`, `measure.ts`, `universe-sync.ts`, `resolve-sweep.ts`, `decide-sweep.ts`, `execute.ts`, `position-manager.ts` |
+| File                             | Purpose                                                                                                                                                                                              |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/ingest.ts`                  | `runPoll` and `runProcess` — the crash-safe ordering (raw store → DB row → enqueue → watermark) lives here                                                                                           |
+| `lib/trading.ts`                 | SimBroker construction, engine-version resolution, pending-intent loading, the CLI's SSM kill-switch reader                                                                                          |
+| `lib/boot.ts`                    | `lazyAsync` cold-start memoization, env contract helpers, the resolver-dictionary TTL cache                                                                                                          |
+| `lib/queue.ts`                   | SQS batch enqueue; throws on any reported per-entry failure so producers re-emit                                                                                                                     |
+| `lib/aws-api.ts`, `lib/sigv4.ts` | Minimal hand-rolled SSM/Secrets/S3 access — avoids pulling large AWS SDK clients into every bundle                                                                                                   |
+| `lib/s3-raw-store.ts`            | The deployed `RawStore` implementation                                                                                                                                                               |
+| Lambda entries                   | `poll.ts`, `process.ts`, `bars-record.ts`, `calendar-sync.ts`, `measure.ts`, `universe-sync.ts`, `resolve-sweep.ts`, `decide-sweep.ts`, `execute.ts`, `position-manager.ts`, `kill-switch-setter.ts` |
 
 ### `services/cli` — the local runner
 
@@ -132,13 +132,13 @@ end-to-end scenarios (see §7).
 
 ### `infra` — five CDK stacks, split by deploy frequency
 
-| Stack                | Contents                                                                                                                     | Changes   |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------- |
-| `data-stack.ts`      | RDS Postgres (`t4g.micro`, public + TLS-required + SG allowlist), S3 raw + LLM-audit buckets                                 | ~never    |
-| `ingest-stack.ts`    | Poller Lambdas on 1–2 min schedules, `q-items` + DLQ, the process Lambda                                                     | rarely    |
-| `analytics-stack.ts` | bars-record `rate(1 min)`, universe-sync daily 05:45, calendar-sync daily 10:15, measure nightly 07:05, resolve-sweep hourly | sometimes |
-| `trading-stack.ts`   | decide-sweep every 5 min → `q-orders` + DLQ → execute (batch 5), position-manager every 15 min. **SIM venue only**           | often     |
-| `ops-stack.ts`       | SNS alarm topic, DLQ/staleness/error alarms, $200 monthly budget                                                             | rarely    |
+| Stack                | Contents                                                                                                                          | Changes   |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `data-stack.ts`      | RDS Postgres (`t4g.micro`, public + TLS-required + SG allowlist), S3 raw + LLM-audit buckets                                      | ~never    |
+| `ingest-stack.ts`    | Poller Lambdas on 1–2 min schedules, `q-items` + DLQ, the process Lambda                                                          | rarely    |
+| `analytics-stack.ts` | bars-record `rate(1 min)`, universe-sync daily 05:45, calendar-sync daily 10:15, measure nightly 07:05, resolve-sweep hourly      | sometimes |
+| `trading-stack.ts`   | decide-sweep every 5 min → `q-orders` + DLQ → execute (batch 5), position-manager every 15 min. **SIM venue only**                | often     |
+| `ops-stack.ts`       | SNS alarm topic, DLQ/staleness/error alarms, $200 monthly budget, and the kill-switch trip path (dedicated topic + setter Lambda) | rarely    |
 
 **Networking is deliberately absent:** no VPC, no NAT. Lambdas run outside any VPC and reach a
 publicly-accessible-but-TLS-required RDS instance, which saves ~$33–55/month for a database holding

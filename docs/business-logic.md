@@ -308,6 +308,13 @@ halted.
 re-set a manual `halt` back to `run` on the next unrelated deploy — the operator creates it once by
 hand.
 
+**One automated trip path is wired: a 100% monthly-budget breach.** It publishes to a dedicated
+kill-switch topic (separate from the alarm topic, so joining it is always an explicit decision) and a
+Lambda scoped to `ssm:PutParameter` on that one parameter writes `halt`. It never writes `run` —
+clearing a halt is a human action, because the reason for the halt is the first thing a human should
+look at. Cost is the broadest available safety net: every runaway this system can have (an LLM retry
+storm, a poller loop, a per-call vendor charge) shows up as spend before it shows up anywhere else.
+
 **Suppressed entries never fire late; suppressed exits do re-fire** on the first pass after the
 switch clears. That asymmetry is intentional: a stale entry signal is worthless, while an open
 position still needs closing.
@@ -475,49 +482,50 @@ version, never by editing the default in place.
 
 ### Pipeline constants (code-level; changing these is a code change)
 
-| Constant                          | Value               | Where                           | Why                                                                          |
-| --------------------------------- | ------------------- | ------------------------------- | ---------------------------------------------------------------------------- |
-| `HEADLINE_SIMILARITY_THRESHOLD`   | 0.5                 | `clustering-repo.ts`            | Headline-only comparison; over-merge is the cheaper error                    |
-| `CANDIDATE_WINDOW_HOURS`          | 48                  | `clustering-repo.ts`            | Story lifetime before a follow-up is genuinely new                           |
-| `RESOLVER_VERSION`                | `'r1'`              | `resolver/match.ts`             | Stamped on links; a bump re-resolves everything                              |
-| `CONFIDENCE.*`                    | 1.0 → 0.7           | `resolver/match.ts`             | Per-method reliability (see §3.3)                                            |
-| `MIN_SOURCE_HINT_TICKER_LENGTH`   | 3                   | `resolver/match.ts`             | 1–2 char tickers collide with English words                                  |
-| `MIN_NAME_ALIAS_LENGTH`           | 4                   | `resolver/match.ts`             | Shorter names are prose collisions (digit-bearing names like "3M" excepted)  |
-| `MIN_LINK_CONFIDENCE`             | 0.75                | `shared-constants.ts`           | Admits crypto keywords (0.8), excludes 40%-FP name matches (0.7)             |
-| `EVENT_WINDOW_BEFORE_MS`          | 72 h                | `bars/windows.ts`               | Off-hours anchors need the prior session's close, up to a long weekend       |
-| `EVENT_WINDOW_AFTER_MS`           | 5 d                 | `bars/windows.ts`               | The longest reaction horizon                                                 |
-| `MEASURER_VERSION`                | `'m1'`              | `reaction/measure-repo.ts`      | Received-clock (tradeable) measurements                                      |
-| `PUB_MEASURER_VERSION`            | `'m1-pub'`          | `reaction/measure-repo.ts`      | Publication-clock measurements (latency pricing)                             |
-| `PUB_MAX_CLOCK_SKEW_MS`           | 2 min               | `reaction/measure-repo.ts`      | Tolerates skew without accepting future-dated claims                         |
-| `PUB_MAX_STALENESS_MS`            | 24 h                | `reaction/measure-repo.ts`      | Rejects implausibly backdated publication claims                             |
-| `DEFAULT_PRICE_STALENESS_MINUTES` | 30                  | `reaction/math.ts`              | Freshness bound before the "later bar proves it" rule applies                |
-| `HORIZON_FALLBACK_CAP_MS`         | 3 d                 | `reaction/math.ts`              | Next-session fallback for daily horizons over weekends                       |
-| `MIN_BETA_OVERLAP_DAYS`           | 30                  | `reaction/math.ts`              | Below this, beta is noise — degrade to raw returns                           |
-| `FLAT_1D_THRESHOLD_BPS`           | 10                  | `reaction/math.ts`              | Below this the 1-day move is "flat"; time-to-half is meaningless             |
-| `RECOVERY_TRIGGER_BPS`            | −50                 | `reaction/math.ts`              | Only genuinely negative events get recovery metrics                          |
-| `DEFAULT_RECOVERY_WINDOW_DAYS`    | 30                  | `reaction/math.ts`              | Long enough for reversion, short enough to conclude                          |
-| `BETA_LOOKBACK_DAYS`              | 90                  | `reaction/measure-repo.ts`      | Enough daily closes for a stable beta                                        |
-| `SIM_SLIPPAGE_BPS`                | 5                   | `broker/sim-fill.ts`            | Adverse-direction fill assumption; sensitivity-testable                      |
-| `SIM_FEE_BPS`                     | 0 / 26              | `broker/sim-fill.ts`            | Commission-free equities; Kraken-taker-like crypto                           |
-| `HORIZON_DURATION_MS`             | 6.5 h / 1 / 3 / 5 d | `decide/exit-rules.ts`          | Intraday is one session; the rest are calendar days                          |
-| `MAX_CLOSE_ATTEMPTS`              | 3                   | `execution/position-manager.ts` | Bounded retries, then a human — never an infinite loop                       |
-| `DECIMAL_SCALE` / `SCALE`         | 8 / 1e8             | `decide/decimal.ts`             | Fixed-point precision for replay-stable arithmetic                           |
-| `CLIENT_ORDER_ID_LENGTH`          | 32                  | `decide/intent.ts`              | Hash prefix length for deterministic order ids                               |
-| `CALENDAR_TOLERANCE_MINUTES`      | 60                  | `trading/features.ts`           | Window around the anchor for a scheduled-event match ⚠️                      |
-| `DOLLAR_VOLUME_LOOKBACK_DAYS`     | 20                  | `trading/features.ts`           | Daily bars used for the liquidity median ⚠️                                  |
-| `MIN_DOLLAR_VOLUME_ROWS`          | 10                  | `trading/features.ts`           | Below this the median is untrustworthy → liquidity unknown → gate fails ⚠️   |
-| `QUOTE_MAX_AGE_MS`                | 24 h                | `trading/decide-repo.ts`        | Older than this, no quote exists → `no_quote` skip ⚠️                        |
-| `REFERENCE_PRICE_MAX_AGE_MS`      | 24 h                | `execution/sim-broker.ts`       | Stale reference close → order rejected rather than filled at a fiction ⚠️    |
-| `EXIT_REFERENCE_MAX_AGE_MS`       | 24 h                | `execution/position-manager.ts` | No fresh bar → skip the position entirely, do not consume a close attempt ⚠️ |
-| `DEFAULT_PAPER_EQUITY_USD`        | `'100000'`          | `execution/sim-broker.ts`       | Starting paper cash (`PAPER_EQUITY_USD` overrides)                           |
-| `COST_APPORTION_SCALE`            | 8                   | `execution/positions.ts`        | Partial-close cost slices, matching the qty column scale                     |
-| `AVG_ENTRY_PRICE_SCALE`           | 6                   | `execution/positions.ts`        | Average entry reported at the price columns' scale                           |
-| `FILL_PRICE/QTY/FEE_SCALE`        | 6 / 8 / 6           | `broker/sim-fill.ts`            | Rounding targets matching the `fills` columns exactly                        |
+| Constant                          | Value               | Where                           | Why                                                                         |
+| --------------------------------- | ------------------- | ------------------------------- | --------------------------------------------------------------------------- |
+| `HEADLINE_SIMILARITY_THRESHOLD`   | 0.5                 | `clustering-repo.ts`            | Headline-only comparison; over-merge is the cheaper error                   |
+| `CANDIDATE_WINDOW_HOURS`          | 48                  | `clustering-repo.ts`            | Story lifetime before a follow-up is genuinely new                          |
+| `RESOLVER_VERSION`                | `'r1'`              | `resolver/match.ts`             | Stamped on links; a bump re-resolves everything                             |
+| `CONFIDENCE.*`                    | 1.0 → 0.7           | `resolver/match.ts`             | Per-method reliability (see §3.3)                                           |
+| `MIN_SOURCE_HINT_TICKER_LENGTH`   | 3                   | `resolver/match.ts`             | 1–2 char tickers collide with English words                                 |
+| `MIN_NAME_ALIAS_LENGTH`           | 4                   | `resolver/match.ts`             | Shorter names are prose collisions (digit-bearing names like "3M" excepted) |
+| `MIN_LINK_CONFIDENCE`             | 0.75                | `shared-constants.ts`           | Admits crypto keywords (0.8), excludes 40%-FP name matches (0.7)            |
+| `EVENT_WINDOW_BEFORE_MS`          | 72 h                | `bars/windows.ts`               | Off-hours anchors need the prior session's close, up to a long weekend      |
+| `EVENT_WINDOW_AFTER_MS`           | 5 d                 | `bars/windows.ts`               | The longest reaction horizon                                                |
+| `MEASURER_VERSION`                | `'m1'`              | `reaction/measure-repo.ts`      | Received-clock (tradeable) measurements                                     |
+| `PUB_MEASURER_VERSION`            | `'m1-pub'`          | `reaction/measure-repo.ts`      | Publication-clock measurements (latency pricing)                            |
+| `PUB_MAX_CLOCK_SKEW_MS`           | 2 min               | `reaction/measure-repo.ts`      | Tolerates skew without accepting future-dated claims                        |
+| `PUB_MAX_STALENESS_MS`            | 24 h                | `reaction/measure-repo.ts`      | Rejects implausibly backdated publication claims                            |
+| `DEFAULT_PRICE_STALENESS_MINUTES` | 30                  | `reaction/math.ts`              | Freshness bound before the "later bar proves it" rule applies               |
+| `HORIZON_FALLBACK_CAP_MS`         | 3 d                 | `reaction/math.ts`              | Next-session fallback for daily horizons over weekends                      |
+| `MIN_BETA_OVERLAP_DAYS`           | 30                  | `reaction/math.ts`              | Below this, beta is noise — degrade to raw returns                          |
+| `FLAT_1D_THRESHOLD_BPS`           | 10                  | `reaction/math.ts`              | Below this the 1-day move is "flat"; time-to-half is meaningless            |
+| `RECOVERY_TRIGGER_BPS`            | −50                 | `reaction/math.ts`              | Only genuinely negative events get recovery metrics                         |
+| `DEFAULT_RECOVERY_WINDOW_DAYS`    | 30                  | `reaction/math.ts`              | Long enough for reversion, short enough to conclude                         |
+| `BETA_LOOKBACK_DAYS`              | 90                  | `reaction/measure-repo.ts`      | Enough daily closes for a stable beta                                       |
+| `SIM_SLIPPAGE_BPS`                | 5                   | `broker/sim-fill.ts`            | Adverse-direction fill assumption; sensitivity-testable                     |
+| `SIM_FEE_BPS`                     | 0 / 26              | `broker/sim-fill.ts`            | Commission-free equities; Kraken-taker-like crypto                          |
+| `HORIZON_DURATION_MS`             | 6.5 h / 1 / 3 / 5 d | `decide/exit-rules.ts`          | Intraday is one session; the rest are calendar days                         |
+| `MAX_CLOSE_ATTEMPTS`              | 3                   | `execution/position-manager.ts` | Bounded retries, then a human — never an infinite loop                      |
+| `DECIMAL_SCALE` / `SCALE`         | 8 / 1e8             | `decide/decimal.ts`             | Fixed-point precision for replay-stable arithmetic                          |
+| `CLIENT_ORDER_ID_LENGTH`          | 32                  | `decide/intent.ts`              | Hash prefix length for deterministic order ids                              |
+| `CALENDAR_TOLERANCE_MINUTES`      | 60                  | `trading/features.ts`           | Window around the anchor for a scheduled-event match                        |
+| `DOLLAR_VOLUME_LOOKBACK_DAYS`     | 20                  | `trading/features.ts`           | Daily bars used for the liquidity median                                    |
+| `MIN_DOLLAR_VOLUME_ROWS`          | 10                  | `trading/features.ts`           | Below this the median is untrustworthy → liquidity unknown → gate fails     |
+| `QUOTE_MAX_AGE_MS`                | 24 h                | `trading/decide-repo.ts`        | Older than this, no quote exists → `no_quote` skip                          |
+| `REFERENCE_PRICE_MAX_AGE_MS`      | 24 h                | `execution/sim-broker.ts`       | Stale reference close → order rejected rather than filled at a fiction      |
+| `EXIT_REFERENCE_MAX_AGE_MS`       | 24 h                | `execution/position-manager.ts` | No fresh bar → skip the position entirely, do not consume a close attempt   |
+| `DEFAULT_PAPER_EQUITY_USD`        | `'100000'`          | `execution/sim-broker.ts`       | Starting paper cash (`PAPER_EQUITY_USD` overrides)                          |
+| `COST_APPORTION_SCALE`            | 8                   | `execution/positions.ts`        | Partial-close cost slices, matching the qty column scale                    |
+| `AVG_ENTRY_PRICE_SCALE`           | 6                   | `execution/positions.ts`        | Average entry reported at the price columns' scale                          |
+| `FILL_PRICE/QTY/FEE_SCALE`        | 6 / 8 / 6           | `broker/sim-fill.ts`            | Rounding targets matching the `fills` columns exactly                       |
 
-**⚠️ marks a value whose rationale is not documented in the code.** They are all plausible and
-mutually consistent (the three 24-hour bounds agree deliberately), but nobody has written down _why_
-24 hours, 20 days, 60 minutes, or 10 rows. Someone changing them should establish the reasoning
-first — see [`roadmap.md`](roadmap.md) §6.
+**Every value above that changes behavior now carries its reasoning in the code**, including why the
+three 24-hour liveness bounds must be equal to each other (a stricter execution bound than decide
+bound would produce intents that can never fill — a silent trading halt). The only values left
+without a written rationale are mechanical: chunk sizes, HTTP timeouts, pool size, and constants that
+exist purely to mirror a column's precision.
 
 ### Where each parameter actually lives at runtime
 

@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import {
   bigint,
   boolean,
@@ -251,10 +252,17 @@ export const priceBars1d = pgTable(
 export const REACTION_HORIZONS = ['5m', '15m', '30m', '1h', '4h', '1d', '3d', '5d'] as const;
 
 /**
- * Abnormal-return ladder per (cluster, instrument, horizon), anchored on the
- * cluster's first_received_at (OUR clock — never published_at). Derived rows:
- * batch jobs rebuild them idempotently; measurer_version keys methodology
- * changes so old rows are comparable, never overwritten in place.
+ * Abnormal-return ladder per (cluster, instrument, horizon, measurer_version).
+ * Derived rows: batch jobs rebuild them idempotently; measurer_version keys
+ * methodology changes so old rows are comparable, never overwritten in place.
+ *
+ * TWO CLOCKS live in this table, distinguished by measurer_version:
+ *   - 'm1'     anchors on cluster.first_received_at — OUR clock, the only honest
+ *              basis for anything trading-related (we cannot trade unreceived news).
+ *   - 'm1-pub' anchors on the cluster's earliest CREDIBLE published_at — what the
+ *              market did once the news existed, independent of our fetch cadence.
+ * The per-pair difference between the two prices our ingestion latency.
+ * `published_at` still never reaches the trading path; both variants are analytics.
  */
 export const reactionMeasurements = pgTable(
   'reaction_measurements',
@@ -267,7 +275,11 @@ export const reactionMeasurements = pgTable(
       .references(() => instruments.id),
     horizon: text('horizon', { enum: REACTION_HORIZONS }).notNull(),
     measurerVersion: text('measurer_version').notNull(),
-    /** cluster.first_received_at, denormalized for query convenience. */
+    /**
+     * The anchor this row was measured from, denormalized for query convenience.
+     * `first_received_at` for measurer_version 'm1'; the credible `published_at`
+     * for 'm1-pub' (see the table comment above).
+     */
     anchorTs: tz('anchor_ts').notNull(),
     rawReturnBps: real('raw_return_bps').notNull(),
     /** Raw minus beta × benchmark return over the same window. */
@@ -415,7 +427,12 @@ export const rulesVersions = pgTable('rules_versions', {
   config: jsonb('config').$type<Record<string, unknown>>().notNull(),
   /** sha256 of canonical JSON — dedup + integrity. */
   configHash: text('config_hash').notNull(),
-  parentVersionId: text('parent_version_id'),
+  /**
+   * Lineage: which version this one was derived from. Self-referencing FK so a
+   * typo'd pointer fails loudly instead of producing an orphaned lineage that
+   * only surfaces when someone tries to trace why a rule changed.
+   */
+  parentVersionId: text('parent_version_id').references((): AnyPgColumn => rulesVersions.id),
   description: text('description'),
   createdAt: tz('created_at').notNull().defaultNow(),
 });

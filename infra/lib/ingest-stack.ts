@@ -197,7 +197,7 @@ export class IngestStack extends Stack {
         removalPolicy: RemovalPolicy.DESTROY,
       }),
       description:
-        'newstrader process: q-items pointer -> dedup/cluster (M0); resolve/interpret/decide arrive M1+',
+        'newstrader process: q-items pointer -> dedup/cluster + entity resolution; LLM interpret arrives with M2',
     });
     props.rawBucket.grantRead(this.processFunction);
     props.dbSecret.grantRead(this.processFunction);

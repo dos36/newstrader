@@ -42,6 +42,16 @@ export interface CloseBar {
   close: string;
 }
 
+/**
+ * How old a bar may be and still count as "the price at time T".
+ *
+ * Why 30 min: inside a trading session a gap this long means the instrument was
+ * not trading (halt, or genuinely illiquid) rather than merely quiet, so its last
+ * close is no longer a fair mark for the horizon. It is intentionally NOT the
+ * mechanism that handles overnights and weekends — those gaps are far longer, and
+ * `settledBarAt`'s later-bar proof handles them by requiring evidence that the
+ * gap was non-trading rather than the end of our data.
+ */
 export const DEFAULT_PRICE_STALENESS_MINUTES = 30;
 
 /** Horizon labels → window length in minutes. */
@@ -116,7 +126,15 @@ export function simpleReturnBps(p0: string, p1: string): number {
   return ((to - from) / from) * 10_000;
 }
 
-/** Beta needs at least this many overlapping daily closes, else it is null. */
+/**
+ * Beta needs at least this many overlapping daily closes, else it is null.
+ *
+ * Why 30: below roughly thirty paired daily returns the standard error on beta is
+ * wide enough that the "adjustment" injects more noise than the market
+ * correlation it removes. Returning null (and reporting raw returns with
+ * `beta_used` empty) is the honest outcome — a fabricated beta would quietly
+ * corrupt every abnormal return derived from it.
+ */
 export const MIN_BETA_OVERLAP_DAYS = 30;
 
 /**
@@ -334,7 +352,14 @@ export function cumulativeAbnormalSeries(
   return points;
 }
 
-/** |1d abnormal| under this is 'flat': no direction, no time-to-half. */
+/**
+ * |1d abnormal| under this is 'flat': no direction, no time-to-half.
+ *
+ * Why 10 bps: that is inside ordinary bid-ask and rounding noise for a liquid
+ * large-cap, so calling such a move "up" or "down" would be reading direction out
+ * of noise — and "time to half of a noise-sized move" is a meaningless number
+ * that would pollute the alpha-decay medians.
+ */
 export const FLAT_1D_THRESHOLD_BPS = 10;
 
 export interface ReactionSummaryResult {
@@ -406,9 +431,27 @@ export function summarize(
   };
 }
 
-/** A (cluster, instrument) qualifies for recovery when 1d abnormal ≤ this. TUNABLE. */
+/**
+ * A (cluster, instrument) qualifies for recovery when 1d abnormal ≤ this. TUNABLE.
+ *
+ * Why −50 bps: comfortably outside the ±10 bps flat band, so the event genuinely
+ * moved the name down, while still catching ordinary bad news rather than only
+ * disasters. It is the population definition for every recovery statistic, so
+ * changing it changes what "recovers from bad news" means — hence TUNABLE, and
+ * hence a change should ship as a new `measurer_version`.
+ */
 export const RECOVERY_TRIGGER_BPS = -50;
 
+/**
+ * How long to watch a negative event for reversion before concluding.
+ *
+ * Why 30 days: long enough that a genuine reversion has had time to happen
+ * (guidance cuts and similar typically resolve within weeks), short enough that
+ * "never recovered" is a claim about the EVENT rather than about how long we were
+ * willing to wait. Always clamped to available data, and the days actually
+ * covered are stored on the row so a truncated window is never mistaken for a
+ * full one.
+ */
 export const DEFAULT_RECOVERY_WINDOW_DAYS = 30;
 
 export interface RecoveryResult {

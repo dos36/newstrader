@@ -22,7 +22,19 @@ export interface WindowMs {
  * A 1 h window left every weekend anchor permanently unmeasurable.
  */
 export const EVENT_WINDOW_BEFORE_MS = 72 * 60 * 60 * 1000;
-/** 5 d post-anchor — the longest reaction/recovery horizon. */
+/**
+ * 5 d post-anchor — the longest reaction/recovery horizon.
+ *
+ * Deliberately NARROWER than what the measurer READS (reaction/measure-repo.ts
+ * reads 5 d + a 3 d settling buffer, because a horizon landing on a weekend needs
+ * a later bar to prove the gap was non-trading rather than the end of our data).
+ * The asymmetry is fine in normal operation: the continuous bars-recorder fills
+ * everything forward minute by minute, so the proof bars exist without any event
+ * window asking for them. It matters in exactly one case — a pure historical
+ * backfill with no recorder running, where the newest anchors' 5 d horizons stay
+ * unmeasurable until a later backfill extends past them.
+ * (The BEFORE side, by contrast, must match the measurer's — see above.)
+ */
 export const EVENT_WINDOW_AFTER_MS = 5 * 24 * 60 * 60 * 1000;
 
 /** The bar-fetch window for one cluster anchor. */

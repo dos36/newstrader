@@ -16,10 +16,13 @@ import { TradingStack } from '../lib/trading-stack.js';
  * NodejsFunction detects esbuild with require.resolve (which succeeds through
  * pnpm's hidden hoist, node_modules/.pnpm/node_modules) but then runs it via
  * `pnpm exec esbuild`, which only searches node_modules/.bin — and esbuild is
- * not a DIRECT dependency of any workspace package (it arrives transitively
- * via tsx/vitest). `pnpm exec` falls back to PATH, so resolving the hoisted
- * package and prepending its bin dir to PATH bridges the gap without Docker.
- * Cleaner long-term fix: declare esbuild as a devDependency of @newstrader/infra.
+ * not always a DIRECT dependency of the package being bundled. `pnpm exec` falls
+ * back to PATH, so resolving the hoisted package and prepending its bin dir to
+ * PATH bridges the gap without Docker.
+ *
+ * esbuild IS now a declared devDependency of @newstrader/infra, so the ordinary
+ * path already works; this shim stays as belt-and-braces for a fresh clone whose
+ * install shape differs, and it prefers the declared copy when one resolves.
  */
 function ensureEsbuildOnPath(): void {
   const require = createRequire(import.meta.url);

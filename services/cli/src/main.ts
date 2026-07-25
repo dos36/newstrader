@@ -96,7 +96,10 @@ const program = new Command();
 
 program
   .name('newstrader')
-  .description('NewsTrader M0: ingestion + clustering (zero LLM spend, no trading)');
+  .description(
+    'NewsTrader: ingest -> cluster -> resolve -> measure -> decide -> paper-trade (venue SIM only). ' +
+      'Zero LLM spend until M2 populates llm_signals.',
+  );
 
 program
   .command('sources:seed')
@@ -161,7 +164,19 @@ program
       options.loop === undefined ? undefined : parsePositiveInt(options.loop, '--loop');
     await withDb(async (db) => {
       for (;;) {
-        await drainProcessBacklog(db, batchSize);
+        try {
+          await drainProcessBacklog(db, batchSize);
+        } catch (error) {
+          if (loopSeconds === undefined) throw error;
+          // Loop mode mirrors `poll --loop` / `bars:record --loop`: a failed
+          // cycle is logged and the next tick retries it. Nothing needs
+          // repairing — an item that failed to cluster is still unclustered, so
+          // the next drain picks it up, and both attach and link persistence are
+          // idempotent. Without this, one transient DB blip ended the loop.
+          console.error(
+            `[process] cycle FAILED: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
         if (loopSeconds === undefined) return;
         console.log(`[process] sleeping ${loopSeconds}s (ctrl-c to stop)`);
         await sleep(loopSeconds * 1000);

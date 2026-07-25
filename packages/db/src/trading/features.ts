@@ -23,10 +23,25 @@ export interface DailyVolumeBar {
   volume: string | null;
 }
 
-/** medianDollarVolume needs at least this many usable (non-null-volume) days. */
+/**
+ * medianDollarVolume needs at least this many usable (non-null-volume) days.
+ *
+ * Why 10 of a 20-day window: below roughly ten observations a median is decided
+ * by one or two prints, so it would assert a liquidity level the data cannot
+ * support. Ten tolerates holidays, halts, and gaps in our own recording while
+ * refusing a verdict on near-empty history — and refusing is the safe direction,
+ * because unknown liquidity FAILS the gate rather than passing it.
+ */
 export const MIN_DOLLAR_VOLUME_ROWS = 10;
 
-/** medianDollarVolume looks back over this many trading days. */
+/**
+ * medianDollarVolume looks back over this many trading days.
+ *
+ * Why 20: about one trading month, the conventional average-daily-volume window.
+ * Long enough that one quiet week does not disqualify a normally liquid name,
+ * short enough to describe the CURRENT liquidity regime rather than last
+ * quarter's.
+ */
 export const DOLLAR_VOLUME_LOOKBACK_DAYS = 20;
 
 /**

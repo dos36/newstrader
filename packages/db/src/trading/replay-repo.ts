@@ -11,7 +11,7 @@ import {
   replayRuns,
   rulesVersions,
 } from '../schema.js';
-import { NO_QUOTE_SKIP_REASON } from './decide-repo.js';
+import { NO_QUOTE_SKIP_REASON, roundSizedNotional } from './decide-repo.js';
 import { getRulesVersion } from './rules-repo.js';
 
 /**
@@ -293,7 +293,9 @@ export async function runReplay(
           features,
           quoteSnapshot: quote,
           sizedQty: result.sizedQty ?? null,
-          sizedNotional: result.sizedNotional ?? null,
+          // Same helper the live path uses — see roundSizedNotional's comment.
+          sizedNotional:
+            result.sizedNotional === undefined ? null : roundSizedNotional(result.sizedNotional),
         })
         .onConflictDoNothing({ target: decisions.decisionKey })
         .returning({ id: decisions.id });

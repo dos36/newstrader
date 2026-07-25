@@ -1,0 +1,1 @@
+ALTER TABLE "rules_versions" ADD CONSTRAINT "rules_versions_parent_version_id_rules_versions_id_fk" FOREIGN KEY ("parent_version_id") REFERENCES "public"."rules_versions"("id") ON DELETE no action ON UPDATE no action;

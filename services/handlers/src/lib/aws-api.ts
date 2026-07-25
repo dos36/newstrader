@@ -51,6 +51,28 @@ export async function getSsmParameter(name: string, options?: AwsCallOptions): P
   return value;
 }
 
+/**
+ * PutParameter with Overwrite — the ONLY write this module performs, used by the
+ * kill-switch setter to trip trading to `halt`.
+ *
+ * Deliberately types the value as a plain `String` parameter (matching the
+ * manually-created kill switch) and always overwrites: tripping an
+ * already-tripped switch must be a harmless no-op so a duplicated notification
+ * cannot fail the invocation.
+ */
+export async function putSsmParameter(
+  name: string,
+  value: string,
+  options?: AwsCallOptions,
+): Promise<void> {
+  await awsJsonCall({
+    service: 'ssm',
+    target: 'AmazonSSM.PutParameter',
+    request: { Name: name, Value: value, Type: 'String', Overwrite: true },
+    ...options,
+  });
+}
+
 /** GetSecretValue — reads the RDS-generated credentials secret. */
 export async function getSecretString(secretId: string, options?: AwsCallOptions): Promise<string> {
   const response = await awsJsonCall({

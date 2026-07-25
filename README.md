@@ -249,8 +249,13 @@ kill-switch parameter (`aws ssm put-parameter --name /newstrader/kill-switch --v
 NOT CDK-managed, see the OpsStack comment: a managed `StringParameter` would silently un-trip a
 manual halt on every unrelated redeploy), and pass the `DbAllowlistCidr` / `AlertEmail` parameters
 — see the comments in `infra/lib/*.ts`. Lambdas assemble `DATABASE_URL` from the RDS secret at cold
-start; it is never stored in Lambda env. Trip the kill switch with
-`aws ssm put-parameter --name /newstrader/kill-switch --value halt --overwrite`.
+start; it is never stored in Lambda env. Trip the kill switch manually with
+`aws ssm put-parameter --name /newstrader/kill-switch --value halt --overwrite`, or let the one
+automated path do it: a **100% monthly-budget breach** publishes to a dedicated kill-switch SNS topic
+whose setter Lambda writes `halt` (50%/80% remain informational email). That Lambda can only write
+that one parameter, and it never writes `run` — clearing a halt is deliberately a human action. The
+topic is exported from the ops stack so future trip paths (execute-DLQ alarm, reconciler drift, LLM
+spend breach) attach explicitly rather than by inheriting every alarm.
 
 Operating the CLI (`pnpm cli decide` / `pnpm cli manage`) against the DEPLOYED database — as
 opposed to local dev, which reads `NEWSTRADER_KILL_SWITCH` — requires

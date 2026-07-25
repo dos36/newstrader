@@ -69,7 +69,15 @@ import { checkKillSwitch } from './kill-switch.js';
  * exist.
  */
 
-/** A close order is only attempted when a bar this fresh exists. */
+/**
+ * A close order is only attempted when a bar this fresh exists.
+ *
+ * Why 24 h: deliberately EQUAL to the broker's REFERENCE_PRICE_MAX_AGE_MS. If
+ * this were looser, every tick would place a close the broker is certain to
+ * reject, burning one of MAX_CLOSE_ATTEMPTS for nothing and eventually wedging
+ * the exit; if it were tighter, positions would sit unmanaged overnight while a
+ * perfectly fillable close was available. Matching the two is the invariant.
+ */
 export const EXIT_REFERENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** decisions.sized_notional is numeric(18,2). */
 const SIZED_NOTIONAL_SCALE = 2;
@@ -77,6 +85,12 @@ const SIZED_NOTIONAL_SCALE = 2;
  * Bound on retrying a close after REJECTED orders (e.g. repeated
  * no-reference-price races). Beyond this, evaluatePosition stops trying and
  * logs a structured error instead of retrying forever.
+ *
+ * Why 3: on the 15-minute schedule that is ~45 minutes of retrying, which rides
+ * out a transient gap in bar recording. A cause that survives three attempts is
+ * structural (a delisted instrument, a broken recorder), and quietly retrying a
+ * structural failure forever is how an unclosable position goes unnoticed — so
+ * the third failure escalates to a human instead.
  */
 export const MAX_CLOSE_ATTEMPTS = 3;
 

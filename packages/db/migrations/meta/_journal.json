@@ -43,6 +43,13 @@
       "when": 1783910913817,
       "tag": "0005_structural_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784950384789,
+      "tag": "0006_rules_lineage_fk",
+      "breakpoints": true
     }
   ]
 }

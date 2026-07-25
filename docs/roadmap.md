@@ -236,43 +236,39 @@ broker appears. Whoever does the IBKR/Kraken work needs to know they are there:
 
 None of these break anything; all of them will mislead the next reader.
 
-1. **`process --loop` has no per-cycle error handling**, unlike `poll --loop` and
-   `bars:record --loop` which log a failed cycle and continue. One transient database blip therefore
-   kills the process loop. Either make it match the documented convention or run it under a
-   supervisor. _(Closest thing to a real bug in this list.)_
-2. **`services/handlers/src/process.ts` claims the deployed stack has no scheduled resolve or
-   universe-sync job.** Both exist in the analytics stack (resolve-sweep hourly, universe-sync daily).
-3. **The CLI program description still reads "M0: ingestion + clustering (zero LLM spend, no
-   trading)"** in `services/cli/src/main.ts`, in the same file that registers the M4 trading commands.
-4. **`infra/lib/ingest-stack.ts` describes the process Lambda as "dedup/cluster (M0);
-   resolve/interpret/decide arrive M1+"** — resolution is in that handler today.
-5. **The AWS-Budget-100% → kill-switch wiring is still deferred** with a comment saying it waits for
-   M4. M4 shipped; a budget breach currently only sends email. This is a real (small) safety gap.
-6. **`infra/bin/newstrader.ts` recommends declaring `esbuild` as an infra devDependency** — already
-   done; the PATH shim is now belt-and-braces.
+1. ~~`process --loop` has no per-cycle error handling.~~ **FIXED** — it now logs a failed cycle and retries on the next tick, matching `poll --loop` / `bars:record --loop`.
+2. ~~`process.ts` claims the deployed stack has no scheduled resolve/universe job.~~ **FIXED** — comment corrected; both are deployed.
+3. ~~The CLI program description still says "M0".~~ **FIXED** — it now describes the full pipeline and the SIM-only venue.
+4. ~~The ingest-stack process description is stale.~~ **FIXED**.
+5. ~~The AWS-Budget-100% → kill-switch wiring is deferred.~~ **FIXED** — a dedicated
+   `killSwitchTopic` now receives the 100% budget breach and a narrowly-scoped setter Lambda writes
+   `halt`. 50%/80% stay informational email. The topic is exported so the execute-DLQ alarm and the
+   future reconciler/LLM-spend breaches can attach deliberately rather than by accident.
+6. ~~`bin/newstrader.ts` recommends declaring esbuild.~~ **FIXED** — comment now records that it is declared and the shim is belt-and-braces.
 7. **`prettier --check .` was failing on 3 files** (two drizzle-generated `migrations/meta/*.json`
    plus `kraken-bars.test.ts`). Fixed: `migrations/meta/` is now in `.prettierignore` and the repo is
    formatted clean, so `--check` is safe to add to CI.
 8. **`rules_versions`'s column is `version_label`, not `label`** — the repo layer maps between them,
    so hand-written SQL against `label` will fail.
-9. **`reaction_measurements.anchor_ts`'s comment says it holds `cluster.first_received_at`** — true
-   for `m1` rows, but `m1-pub` rows hold the publication anchor. The comment predates the second clock.
-10. **The measurer's summary log stamps `measurerVersion: 'm1'`** even on runs that write both
-    variants, so a log reader under-counts `m1-pub` work.
-11. **`sizedNotional` is pre-rounded on the live path but not on the replay path.** Harmless today
-    (the `numeric(18,2)` column rounds on write and the comparison trims trailing zeros), but the two
-    write paths are not textually symmetric — a future comparison that skipped canonicalization would
-    report phantom divergences.
-12. **Fetch/read window asymmetry:** bars are _fetched_ for `anchor+5d` but _read_ for `anchor+8d`
-    (the settling buffer). Only the before-anchor side carries a comment saying the two must agree.
-    Confirm the after side is intentional, then document it.
-13. **`rules_versions.parent_version_id` has no foreign key**, so a typo'd lineage pointer is not
-    caught.
-14. **~15 constants have a value but no documented rationale** — the ⚠️ rows in
-    [`business-logic.md`](business-logic.md) §9 (the three 24-hour freshness bounds, the 20-day
-    liquidity lookback, the 60-minute calendar tolerance, the 10-row median minimum, and others).
-    They are consistent and plausible, but nobody wrote down _why_, and these are exactly the values
-    a future tuning pass will want to change.
+9. ~~`reaction_measurements.anchor_ts`'s comment claims `first_received_at` for all rows.~~ **FIXED**
+   — the table comment now documents both clocks and the column says which anchor belongs to which
+   `measurer_version`.
+10. ~~The measurer's summary log stamps only `measurerVersion: 'm1'`.~~ **FIXED** — it stamps both
+    versions and states which counter group belongs to which.
+11. ~~`sizedNotional` rounding is asymmetric between the live and replay paths.~~ **FIXED** — the
+    rounding helper is exported and both paths call it, so they cannot drift.
+12. ~~Fetch/read window asymmetry is undocumented.~~ **FIXED** — confirmed intentional and documented:
+    the recorder fills bars forward continuously, so settling-proof bars exist without an event window
+    asking for them. It matters only for a pure historical backfill with no recorder running.
+13. ~~`rules_versions.parent_version_id` has no foreign key.~~ **FIXED** — self-referencing FK added in
+    migration `0006_rules_lineage_fk.sql`.
+14. **Constant rationales — mostly FIXED.** The eleven values that actually change behavior now carry
+    their reasoning: the three 24-hour liveness bounds (and why they must equal each other), the
+    20-day/10-row liquidity pair, the 60-minute calendar tolerance, the 30-minute staleness bound, the
+    30-day beta minimum, the 10-bp flat band, the −50-bp recovery trigger, the 30-day recovery window,
+    and the 3-attempt close bound. Left undocumented deliberately: mechanical values whose reason is
+    self-evident from context — chunk sizes (500), HTTP timeouts (30 s), pool size (5), and the scale
+    constants that exist only to mirror a column's precision.
 
 ---
 

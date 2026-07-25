@@ -22,10 +22,9 @@ import { loadItemsByIds, parseRawItemRecord, resolveProcessItem } from './lib/in
  * with a TTL: universe:sync changes instruments/aliases out-of-band, and a
  * warm container must pick that up without a redeploy. 5 minutes staleness is
  * tolerable, with one honest caveat: items missed during the window stay
- * unlinked until a `resolve` backfill sweep runs, and that sweep currently
- * exists only as the manual CLI command — the deployed stack has no scheduled
- * resolve job yet (tracked for the deployment milestone alongside a scheduled
- * universe:sync).
+ * unlinked until a `resolve` backfill sweep runs. That sweep IS deployed — the
+ * analytics stack runs resolve-sweep hourly and universe-sync daily — so the
+ * worst case is a link arriving up to an hour late, not never arriving.
  */
 const DICTIONARY_TTL_MS = 5 * 60_000;
 let dictionaryCache: { dictionary: ResolverDictionary; expiresAt: number } | undefined;

@@ -43,7 +43,16 @@ import type { PortfolioFill } from './positions.js';
 export const SIM_VENUE = 'sim';
 /** placeOrder rejection reason when no recent bar exists for the instrument. */
 export const NO_REFERENCE_PRICE = 'no_reference_price';
-/** A reference close older than this is stale — the order is rejected. */
+/**
+ * A reference close older than this is stale — the order is rejected.
+ *
+ * Why 24 h, and why exactly this number: it is a LIVENESS check (is there any
+ * current price for this instrument at all?), not a freshness guarantee —
+ * equity bars stop at the close, so a tighter bound would reject every
+ * overnight fill. It is deliberately EQUAL to decide-repo's QUOTE_MAX_AGE_MS:
+ * if execution were stricter than decide, the engine would keep producing
+ * intents that can never fill, which looks like a silent trading halt.
+ */
 export const REFERENCE_PRICE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** Starting paper cash when none is configured (architecture paper account). */
 export const DEFAULT_PAPER_EQUITY_USD = '100000';

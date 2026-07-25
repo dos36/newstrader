@@ -48,10 +48,31 @@ import { loadUndecidedSignals, type UndecidedSignal } from './signals-repo.js';
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 
-/** Calendar-match half-window around the ANCHOR (cluster first_received_at). */
+/**
+ * Calendar-match half-window around the ANCHOR (cluster first_received_at).
+ *
+ * Why 60 min: a scheduled release generates coverage for roughly an hour on
+ * either side — previews just before, reactions just after — and that whole band
+ * is "expected" news. Much tighter and a preview written 20 minutes early looks
+ * novel; much wider and ordinary unrelated news on a CPI morning gets suppressed.
+ * A judgment call: the calibration report (LLM `already_expected` vs this
+ * deterministic match, per event type) is the evidence that should refine it.
+ */
 export const CALENDAR_TOLERANCE_MINUTES = 60;
 
-/** A minute bar older than this cannot serve as the decision-time quote. */
+/**
+ * A minute bar older than this cannot serve as the decision-time quote.
+ *
+ * Why 24 h: this is a LIVENESS check, not a freshness target. Its job is to
+ * reject an instrument we have no current price for at all (delisted, halted,
+ * never recorded), not to guarantee a recent price — equity bars stop at the
+ * close, so any tighter bound would reject every overnight and weekend decision,
+ * which is precisely when filings arrive. Freshness in the sense that matters for
+ * trading is the `stale_move` gate's job: it measures how far price has moved
+ * since the anchor, not how old the quote is. Deliberately equal to the
+ * execution-side bounds (sim-broker, position-manager) so a decision that passes
+ * this gate is never rejected at fill time for the same reason.
+ */
 export const QUOTE_MAX_AGE_MS = 24 * HOUR_MS;
 
 /** skip_reason recorded when no usable quote bar exists — replay copies these verbatim. */
@@ -264,7 +285,16 @@ const NO_QUOTE_GATE: GateResult = {
 /** decisions.sized_notional is numeric(18,2) (mirrors position-manager.ts). */
 const SIZED_NOTIONAL_SCALE = 2;
 
-function roundSizedNotional(value: string): string {
+/**
+ * Round to the sized_notional column scale before writing.
+ *
+ * Exported so replay-repo writes through the SAME helper. The column rounds on
+ * write either way and compareRuns canonicalizes trailing zeros, so a divergence
+ * is not reachable today — but two independent write paths for one column is
+ * exactly how a phantom divergence appears the day someone compares stored
+ * strings without canonicalizing. One definition, both paths.
+ */
+export function roundSizedNotional(value: string): string {
   return formatDec(roundTo(parseDec(value), SIZED_NOTIONAL_SCALE));
 }
 

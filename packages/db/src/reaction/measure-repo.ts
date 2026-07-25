@@ -477,7 +477,12 @@ function logTotals(totals: MeasureReactionsTotals): void {
     JSON.stringify({
       level: 'info',
       msg: 'reaction_measure',
+      // BOTH clocks run in one pass, and the totals carry both counter groups:
+      // the unprefixed counters (pairs/measured/…) belong to MEASURER_VERSION,
+      // the pub* counters to PUB_MEASURER_VERSION. Stamping only the former made
+      // a log reader under-count the publication-anchored half of the work.
       measurerVersion: MEASURER_VERSION,
+      pubMeasurerVersion: PUB_MEASURER_VERSION,
       ...totals,
     }),
   );
