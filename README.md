@@ -1,8 +1,15 @@
 # NewsTrader
 
 A personal research system that measures whether LLM news interpretation has a tradeable edge —
-profit is the hypothesis, not the assumption. Paper-trading only. The full design is in
-[docs/newstrader-architecture.md](docs/newstrader-architecture.md); read it before changing anything.
+profit is the hypothesis, not the assumption. Paper-trading only.
+
+**New here (human or agent)? Start with [`docs/README.md`](docs/README.md)** — it is the index and
+prescribes a reading order. The short version: this file is the operator runbook,
+[`docs/codebase-guide.md`](docs/codebase-guide.md) explains how the code is organized,
+[`docs/business-logic.md`](docs/business-logic.md) explains _why_ every rule is what it is,
+[`docs/roadmap.md`](docs/roadmap.md) is what is left to do, and
+[`docs/newstrader-architecture.md`](docs/newstrader-architecture.md) is the approved design plus all
+the verified vendor research behind it.
 
 **Current state: milestone 4** — ingestion + clustering + entity resolution + price recording +
 reaction analytics + scheduled-event calendars + the deterministic decision engine with SimBroker
@@ -74,6 +81,16 @@ the alpha-decay scalar that doubles as the minutes-migration trigger), and recov
 negative events (1d abnormal ≤ −50 bps). Horizons fill in per-horizon as bars settle, so re-runs
 are cheap no-ops and late horizons (3d/5d over weekends) arrive on later nights — which is why the
 measure window is ~9 days, not one.
+
+**Two clocks, two questions.** The identical ladder/summary/recovery math runs under two measurer
+versions. `m1` anchors on `first_received_at` — the tradeable view, and the only honest clock for
+anything trading-related. `m1-pub` anchors on the cluster's earliest _credible_ `published_at`
+(present, ≤ 2 min after our receipt to allow clock skew, ≥ 24 h before it) and answers what the
+market did once the news existed at all — exact regardless of our fetch cadence, because bars carry
+exchange timestamps. **The per-pair difference between the two curves is the measured cost of our
+ingestion latency**, which is the evidence that decides whether a faster (paid) news feed pays for
+itself. `stats` also reports received−published latency per source, which doubles as a
+poller-outage detector.
 
 **Calendars feed the deterministic `already_expected` feature (architecture §6).** `calendar:sync`
 scrapes FOMC / BLS (CPI, NFP) / BEA (GDP, PCE) release schedules — throwing on any format drift —
@@ -164,25 +181,25 @@ news. Raw payloads land under `./data/raw/` locally (S3 when deployed).
 
 ### CLI commands
 
-| Command                                                                          | What it does                                                                                                            |
-| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `pnpm cli sources:seed`                                                          | Upsert `news_sources` rows for every enabled adapter, print the table                                                   |
-| `pnpm cli universe:sync`                                                         | Sync instruments (S&P 500 + crypto), point-in-time SPX membership, alias dictionary                                     |
-| `pnpm cli poll [sourceKey] [--loop <s>]`                                         | One poll cycle (or forever with `--loop`): cursor → fetch → raw store → `raw_news_items`                                |
-| `pnpm cli process [--batch <n>]`                                                 | Attach unclustered items to clusters + resolve them to instruments, close stale clusters                                |
-| `pnpm cli resolve [--batch <n>]`                                                 | Backfill `item_instrument_links` for every raw item without an r1 link                                                  |
-| `pnpm cli bars:record [--loop <s>]`                                              | One bars-recorder tick: Massive full-market snapshot + Kraken OHLC → `price_bars_1m`                                    |
-| `pnpm cli bars:backfill [--from/--to/--days]`                                    | Benchmarks + daily bars (beta window) + event-window minute bars via aggregates                                         |
-| `pnpm cli calendar:sync [--horizon-days <n>]`                                    | Macro + earnings calendars → `scheduled_events` (90d forward window by default)                                         |
-| `pnpm cli measure [--since-hours <n>]`                                           | Reaction ladder / summary / recovery for clusters first seen in the window (default 168h)                               |
-| `pnpm cli rules:init`                                                            | Seed the shipped default rules version (long-only, empty whitelist — trades nothing)                                    |
-| `pnpm cli decide [--rules/--batch/--execute]`                                    | Engine over undecided signals → decisions rows; `--execute` places pending intents (sim)                                |
-| `pnpm cli positions`                                                             | Derived positions, account state, unrealized + realized P&L (from sim fills)                                            |
-| `pnpm cli manage [--rules <label>]`                                              | One position-manager pass: exit evaluation → replayable `action=close` decisions                                        |
-| `pnpm cli replay --rules <label> [--from/--to]`                                  | Replay the stored signal log under a rules version (Mode A: live label ⇒ bit-for-bit; warns on Mode B)                  |
-| `pnpm cli replay:compare --a <run\|live> --b <run\|live> [--live-rules <label>]` | Per-signal divergence report between two runs (`--live-rules` scopes a `live` side; defaults to the other side's label) |
-| `pnpm cli stats`                                                                 | Items/day, dedup ratio, clusters, resolution coverage, reaction + alpha-decay medians, calendar, trading                |
-| `pnpm cli db:ping`                                                               | Connect + `SELECT 1`                                                                                                    |
+| Command                                                                          | What it does                                                                                                                                                                                               |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm cli sources:seed`                                                          | Upsert `news_sources` rows for every enabled adapter, print the table                                                                                                                                      |
+| `pnpm cli universe:sync`                                                         | Sync instruments (S&P 500 + crypto), point-in-time SPX membership, alias dictionary                                                                                                                        |
+| `pnpm cli poll [sourceKey] [--loop <s>]`                                         | One poll cycle (or forever with `--loop`): cursor → fetch → raw store → `raw_news_items`                                                                                                                   |
+| `pnpm cli process [--batch <n>] [--loop <s>]`                                    | Attach unclustered items to clusters + resolve them to instruments, close stale clusters (`--loop` = the local stand-in for the deployed process Lambda)                                                   |
+| `pnpm cli resolve [--batch <n>]`                                                 | Backfill `item_instrument_links` for every raw item without an r1 link                                                                                                                                     |
+| `pnpm cli bars:record [--loop <s>]`                                              | One bars-recorder tick: Massive full-market snapshot + Kraken OHLC → `price_bars_1m`                                                                                                                       |
+| `pnpm cli bars:backfill [--from/--to/--days]`                                    | Benchmarks + daily bars (beta window) + event-window minute bars via aggregates                                                                                                                            |
+| `pnpm cli calendar:sync [--horizon-days <n>]`                                    | Macro + earnings calendars → `scheduled_events` (90d forward window by default)                                                                                                                            |
+| `pnpm cli measure [--since-hours <n>]`                                           | Reaction ladder / summary / recovery for clusters first seen in the window (default **216h** — ~9 days, so 3d/5d horizons spanning a weekend still settle; a shorter window would strand them permanently) |
+| `pnpm cli rules:init`                                                            | Seed the shipped default rules version (long-only, empty whitelist — trades nothing)                                                                                                                       |
+| `pnpm cli decide [--rules/--batch/--execute]`                                    | Engine over undecided signals → decisions rows; `--execute` places pending intents (sim)                                                                                                                   |
+| `pnpm cli positions`                                                             | Derived positions, account state, unrealized + realized P&L (from sim fills)                                                                                                                               |
+| `pnpm cli manage [--rules <label>]`                                              | One position-manager pass: exit evaluation → replayable `action=close` decisions                                                                                                                           |
+| `pnpm cli replay --rules <label> [--from/--to]`                                  | Replay the stored signal log under a rules version (Mode A: live label ⇒ bit-for-bit; warns on Mode B)                                                                                                     |
+| `pnpm cli replay:compare --a <run\|live> --b <run\|live> [--live-rules <label>]` | Per-signal divergence report between two runs (`--live-rules` scopes a `live` side; defaults to the other side's label)                                                                                    |
+| `pnpm cli stats`                                                                 | Items/day, dedup ratio, clusters, resolution coverage, reaction + alpha-decay medians, calendar, trading                                                                                                   |
+| `pnpm cli db:ping`                                                               | Connect + `SELECT 1`                                                                                                                                                                                       |
 
 ## Repo layout
 
@@ -240,7 +257,11 @@ opposed to local dev, which reads `NEWSTRADER_KILL_SWITCH` — requires
 `KILL_SWITCH_SSM_PARAM=/newstrader/kill-switch` in the environment so the CLI reads the same SSM
 parameter the Lambdas do, with the same fail-closed guarantee (any read failure halts).
 
-**Known entitlement gap:** the Massive full-market snapshot endpoint needs the Stocks Starter
-subscription active on the key. Until it is, every bars-record tick fails loudly (status
-`NOT_AUTHORIZED`) and its error-rate alarm fires — deliberately not swallowed. Minute bars still
-arrive via the nightly measure job's aggregates backfill, which works on the current key.
+**Massive entitlement (resolved 2026-07-13):** the full-market snapshot endpoint requires an active
+Stocks Starter subscription on the key, and it is now live — one snapshot call returns all ~504
+universe tickers' latest minute bar, and aggregates accept sustained bursts without rate-limiting.
+If a key ever loses the entitlement the recorder fails loudly (`NOT_AUTHORIZED`) and its error-rate
+alarm fires — deliberately not swallowed, because silently missing bars would corrupt every
+downstream reaction measurement. Starter data is 15-minute delayed, which is by design: reaction
+measurement is a batch job over historical aggregates (not delayed), and the trading horizon is
+hours-to-days, so a delayed decision price is noise relative to the holding period.

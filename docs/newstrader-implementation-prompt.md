@@ -1,6 +1,18 @@
 # Implementation prompt: NewsTrader v1 (TypeScript / AWS / Canada)
 
-_Version 2 — supersedes the earlier Python-stack draft. Companion document: `newstrader-architecture.md` (same folder) — where this prompt and the architecture doc disagree, the architecture doc wins._
+> **HISTORICAL — this is the build spec that produced the code, not a description of it.**
+> Reviewed 2026-07-24 and deliberately kept, for two reasons: it is the record of what we asked for,
+> and it is still the **most specific written spec for the parts that are not built yet** (the LLM
+> stage §5, replay Mode B §8.6, the reconciler and portfolio limits §6, the full broker interface §7).
+>
+> Do **not** treat it as current truth. For built behavior the code is authoritative — see
+> [`codebase-guide.md`](codebase-guide.md) and [`business-logic.md`](business-logic.md). Its
+> unbuilt requirements have been extracted into concrete work items in [`roadmap.md`](roadmap.md);
+> notable places where the shipped code deliberately differs: the confidence gate is **0.75** (not
+> 0.7), Node is **20** (not 22), sector-exposure and daily-drawdown limits were never built, and
+> `RISKS.md` was never written (the risk register lives in architecture §11).
+>
+> _Version 2 — superseded the earlier Python-stack draft. Where this prompt and the architecture doc disagree, the architecture doc wins._
 
 ---
 

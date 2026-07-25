@@ -7,3 +7,6 @@ cdk.out/
 .DS_Store
 **/data/raw/
 coverage/
+
+# Local private keys (IBKR OAuth signing/encryption, DH params) — NEVER commit
+secrets/

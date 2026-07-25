@@ -19,7 +19,7 @@ const minuteFixture = loadFixture('kraken-ohlc-1m.json');
 const dailyFixture = loadFixture('kraken-ohlc-1d.json');
 
 describe('parseKrakenOhlc', () => {
-  it('parses committed minute candles under Kraken\'s renamed pair key, prices verbatim', () => {
+  it("parses committed minute candles under Kraken's renamed pair key, prices verbatim", () => {
     const bars = parseKrakenOhlc(minuteFixture, 1);
     // Fixture has 5 rows; the trailing one (time > last) is the in-progress candle.
     expect(bars).toHaveLength(4);
@@ -56,10 +56,12 @@ describe('parseKrakenOhlc', () => {
   });
 
   it('throws when the result does not contain exactly one pair key', () => {
-    expect(() => parseKrakenOhlc({ error: [], result: { last: 1 } }, 1)).toThrow(/expected exactly 1/);
-    expect(() =>
-      parseKrakenOhlc({ error: [], result: { A: [], B: [], last: 1 } }, 1),
-    ).toThrow(/expected exactly 1/);
+    expect(() => parseKrakenOhlc({ error: [], result: { last: 1 } }, 1)).toThrow(
+      /expected exactly 1/,
+    );
+    expect(() => parseKrakenOhlc({ error: [], result: { A: [], B: [], last: 1 } }, 1)).toThrow(
+      /expected exactly 1/,
+    );
   });
 
   it('throws on tuple shape drift (numbers where strings belong, short rows)', () => {
@@ -72,15 +74,17 @@ describe('parseKrakenOhlc', () => {
     expect(() =>
       parseKrakenOhlc({ error: [], result: { XXBTZUSD: [[60, '1', '2']], last: 120 } }, 1),
     ).toThrow();
-    expect(() => parseKrakenOhlc({ error: [], result: { XXBTZUSD: 'nope', last: 1 } }, 1)).toThrow();
+    expect(() =>
+      parseKrakenOhlc({ error: [], result: { XXBTZUSD: 'nope', last: 1 } }, 1),
+    ).toThrow();
     expect(() => parseKrakenOhlc(null, 1)).toThrow();
   });
 
   it('throws on candle times misaligned to the interval', () => {
     const row = [61, '1.0', '1.0', '1.0', '1.0', '1.0', '0.5', 3];
-    expect(() =>
-      parseKrakenOhlc({ error: [], result: { XXBTZUSD: [row], last: 120 } }, 1),
-    ).toThrow(/not aligned/);
+    expect(() => parseKrakenOhlc({ error: [], result: { XXBTZUSD: [row], last: 120 } }, 1)).toThrow(
+      /not aligned/,
+    );
   });
 
   it('throws when the last marker is missing or malformed', () => {
@@ -108,7 +112,10 @@ describe('fetchKrakenOhlc', () => {
       captured = url;
       return new Response(JSON.stringify(dailyFixture), { status: 200 });
     };
-    await fetchKrakenOhlc({ fetchImpl: stub }, { symbol: 'SOL', interval: 1440, since: 1721520000 });
+    await fetchKrakenOhlc(
+      { fetchImpl: stub },
+      { symbol: 'SOL', interval: 1440, since: 1721520000 },
+    );
     expect(captured).toBe(
       'https://api.kraken.com/0/public/OHLC?pair=SOLUSD&interval=1440&since=1721520000',
     );
@@ -117,8 +124,8 @@ describe('fetchKrakenOhlc', () => {
   it('surfaces non-2xx as a descriptive error', async () => {
     const stub: FetchLike = async () =>
       new Response('slow down', { status: 429, statusText: 'Too Many Requests' });
-    await expect(fetchKrakenOhlc({ fetchImpl: stub }, { symbol: 'ETH', interval: 1 })).rejects.toThrow(
-      /429/,
-    );
+    await expect(
+      fetchKrakenOhlc({ fetchImpl: stub }, { symbol: 'ETH', interval: 1 }),
+    ).rejects.toThrow(/429/);
   });
 });

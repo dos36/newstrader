@@ -4,6 +4,56 @@ _Status: approved design, 2026-07-10. All prices/limits/availability claims were
 
 ---
 
+## READ THIS FIRST — document status (updated 2026-07-24)
+
+**This document is still the project's "why" bible and its vendor-research record — keep it.** Every
+cost, rate limit, ToS constraint, and broker/venue fact in here was verified against live sources
+and is expensive to re-derive. The design stance (§0), bias traps (§8), analytics-question mapping
+(§6), and venue analysis (§7) remain fully authoritative.
+
+**But it describes an intended design, and the build has moved.** For what actually exists, read
+[`codebase-guide.md`](codebase-guide.md); for what the code's rules actually are, read
+[`business-logic.md`](business-logic.md); for what is left, read [`roadmap.md`](roadmap.md).
+
+**§10 (build order) is historical.** It planned M4 = decision engine record-only and M5 = execution;
+those shipped together as "M4," and M2 (the LLM stage) was deliberately built **last** because
+everything else could proceed without it. Built today: M0, M1, M3, M4. Unbuilt: M2 (LLM), M5
+(evaluation/reporting), M6–M7 (IBKR/Kraken/go-live).
+
+### Known drift: this doc vs the code
+
+Each row is a deliberate divergence or an unbuilt promise, not a bug to "fix" silently. Work items
+for all of them live in [`roadmap.md`](roadmap.md).
+
+| §   | This doc says                                                                        | Reality                                                                                                                                                          |
+| --- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 5.1 | Candidate blocks = clusters sharing an instrument; headline **+ lede** trigram ≈ 0.7 | Global advisory lock, **headline-only**, threshold **0.5**. Instrument blocking needs resolution to run before clustering, which it does not                     |
+| 5.3 | `signal_fanout` table; sector fan-out                                                | **Table does not exist.** Sector/macro signals can be recorded but never fan out or trade                                                                        |
+| 5.3 | `llm_signals.retrospective` flag                                                     | **Column does not exist** — needs a migration before any retrospective LLM run                                                                                   |
+| 5.4 | `decisions.features` each tagged `world` \| `portfolio`                              | Flat, untagged. **This is the blocker for replay Mode B**                                                                                                        |
+| 5.4 | Replay Mode A **and** Mode B                                                         | Mode A only (CI-gated, bit-for-bit). Mode B warns `mode_b_unsound_portfolio_features`                                                                            |
+| 5.5 | `price_bars_1m` monthly partitions + `vwap` column                                   | Unpartitioned, no `vwap`. Fine at current volume                                                                                                                 |
+| 5.5 | Nightly flat-file reconciliation as canonical bar record; 2-yr backfill              | Not built. Bars come from snapshot + event-window aggregates                                                                                                     |
+| 5.6 | `source_reliability_stats`, `news_bursts`, `replay_run_metrics`                      | None exist. `reaction_*` and `recovery_*` are built                                                                                                              |
+| 3   | Point-in-time membership backfilled from `fja05680/sp500`                            | Forward-only from 2026-07-11. Pre-recording backtests carry survivorship bias                                                                                    |
+| 4.1 | Reconciler every 15 min (broker vs local state → kill switch)                        | **Not built.** Highest-priority safety gap                                                                                                                       |
+| 7   | 14-method `BrokerAdapter` + `MarketDataProvider`                                     | v1 implements 3 methods (`placeOrder`, `getPositions`, `getAccountState`) — grows at the IBKR stage                                                              |
+| —   | (not in this doc)                                                                    | **New:** a second measurer clock `m1-pub` anchored on credible `published_at`, whose delta vs `m1` prices our ingestion latency; per-source ingest-latency stats |
+
+### `[re-check at build]` flags — current answers
+
+- **Massive Starter snapshot entitlement** → **resolved, works.** One snapshot call returns every
+  universe ticker's latest minute bar; aggregates take sustained bursts un-throttled. The `min`
+  sub-object is populated; `lastQuote`/`lastTrade` population remains unverified because the
+  recorder does not use them. 15-minute delay confirmed and accepted (§5.5's reasoning holds).
+- **Kraken OHLC 720-candle cap** → **verified live** (721 rows returned). Consequence is sharper
+  than the doc implies: un-recorded crypto minutes are **permanently lost**, which makes deploying
+  the recorder the most time-sensitive operational task.
+- **IBKR paper accounts not enrolled in 2FA** → **still unverified.** OAuth 1.0a keypairs have been
+  generated (`secrets/ibkr/`); activation is not confirmed.
+
+---
+
 ## 0. Purpose and design stance
 
 **NewsTrader measures whether LLM news interpretation has a tradeable edge — profit is the hypothesis, not the assumption.** Every design decision favors auditability and honest evaluation over cleverness. The system paper-trades only; going live requires code changes, not configuration.
