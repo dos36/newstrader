@@ -370,6 +370,14 @@ such results as trustworthy.
 future agent knows what has and has not been established. Query the database for current numbers;
 these are a snapshot, not a contract.
 
+**Correction (2026-08-05 audit):** raw volume figures below overstate real news. EDGAR's `type=`
+parameter prefix-matches, so the "Form 4" feed also ingested 424B*/497*/485*/425/40-* filings —
+about two-thirds of that feed — until the adapter gained a form-family filter. The junk never
+resolved to instruments (the CIK gate correctly refused it), so clustering quality, resolution
+precision, reaction measurements, and the Sonnet-only triage decision (which counted only LINKED
+clusters) are all unaffected. Raw items/day, clusters/day (~719), and the Form 4 share are the
+numbers to distrust for the pre-fix window.
+
 - **Ingestion: 18,248 raw items from 9 sources.** Form 4 filings alone are 53% of volume (9,745),
   then 8-Ks (2,611), GlobeNewswire (3,223), Massive news (1,905), crypto RSS (~250 each).
   `edgar_13g` has registered but never yielded a single item.

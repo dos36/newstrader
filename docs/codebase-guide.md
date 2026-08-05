@@ -296,3 +296,6 @@ a real deploy produces a different context key and does a real lookup.
 8. **Operating the CLI against a deployed database needs `KILL_SWITCH_SSM_PARAM`**, or it will read a
    local env var that is probably unset and therefore trade while production is halted.
 9. **`decide` reporting `examined=0` is correct today** — `llm_signals` is empty until M2 exists.
+10. **EDGAR's `getcurrent` `type=` parameter prefix-matches.** `type=4` returns 424B2 prospectuses,
+    497* fund docs, and everything else starting with "4". The adapter filters to each form family
+    (`ACCEPTED_FORM_TYPES` in `edgar.ts`); any new EDGAR form type needs its own accept predicate.

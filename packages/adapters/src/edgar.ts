@@ -31,6 +31,25 @@ const SOURCE_KEY_BY_FORM: Record<EdgarFormType, string> = {
   'SC 13G': 'edgar_13g',
 };
 
+/**
+ * getcurrent's `type=` parameter PREFIX-matches, discovered the hard way:
+ * polling type=4 delivered 424B2 structured-note prospectuses, 497* fund
+ * documents, 485* registrations, 425 merger communications, and 40-* forms —
+ * ~66% of the feed's volume over the first 27 days of live collection, none
+ * of it insider trading. Each adapter therefore keeps only its own form
+ * family (the base form plus amendments; 8-K keeps its 8-K12B-style
+ * variants, which are genuine 8-K events). Entries whose category term is
+ * MISSING are kept — for the requested feed that is far more likely to be
+ * format drift on a real filing than junk, and the junk observed always
+ * carries its true term.
+ */
+const ACCEPTED_FORM_TYPES: Record<EdgarFormType, (formType: string) => boolean> = {
+  '8-K': (f) => f.startsWith('8-K'),
+  '4': (f) => f === '4' || f === '4/A',
+  'SC 13D': (f) => f === 'SC 13D' || f === 'SC 13D/A',
+  'SC 13G': (f) => f === 'SC 13G' || f === 'SC 13G/A',
+};
+
 /** Accession number as it appears in entry ids: urn:tag:sec.gov,2008:accession-number=… */
 const ACCESSION_RE = /accession-number=(\d{10}-\d{2}-\d{6})/;
 const ACCESSION_ANY_RE = /(\d{10}-\d{2}-\d{6})/;
@@ -175,18 +194,27 @@ export class EdgarAdapter implements SourceAdapter {
     const feed = EdgarFeed.parse(parseXml(xml));
     const entries = feed.feed.entry ?? [];
 
+    const accepted = ACCEPTED_FORM_TYPES[this.formType];
     const itemsNewestFirst: FetchedItem[] = [];
     let newestAccession: string | null = null;
     let cursorFound = false;
     for (const entry of entries) {
       const parsed = parseEntry(entry);
       if (parsed === undefined) continue;
+      // Cursor bookkeeping runs over EVERY parsed entry, including ones the
+      // form filter below rejects: the cursor is a feed position, and skipping
+      // junk entries in it would re-walk (and re-filter) them every poll and
+      // break the deep-paging stop condition.
       newestAccession ??= parsed.externalId;
       // The cursor is the newest accession of the previous poll: stop there.
       if (cursor !== null && parsed.externalId === cursor) {
         cursorFound = true;
         break;
       }
+      // getcurrent type= prefix-matches; keep only our own form family
+      // (see ACCEPTED_FORM_TYPES). Missing term = keep, per the same note.
+      const formType = parsed.meta?.['formType'];
+      if (typeof formType === 'string' && !accepted(formType)) continue;
       itemsNewestFirst.push(parsed);
     }
     return { itemsNewestFirst, newestAccession, cursorFound, entryCount: entries.length };

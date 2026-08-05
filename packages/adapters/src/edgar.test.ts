@@ -170,3 +170,80 @@ describe('EdgarAdapter cursor', () => {
     }
   });
 });
+
+describe('EdgarAdapter form-type filtering (getcurrent type= prefix-matches)', () => {
+  // Shape-faithful minimal Atom entries matching the real feed's markup. The
+  // junk types (424B2, 497K) are the exact ones observed flooding the live
+  // type=4 feed for 27 days before this filter existed.
+  const entryXml = (accession: string, formType: string, title: string): string => `
+    <entry>
+      <title>${title}</title>
+      <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/1/${accession}-index.htm"/>
+      <summary type="html">Filed with the SEC.</summary>
+      <updated>2026-08-05T12:00:00-04:00</updated>
+      <category scheme="https://www.sec.gov/form-type" label="form type" term="${formType}"/>
+      <id>urn:tag:sec.gov,2008:accession-number=${accession}</id>
+    </entry>`;
+
+  const feedXml = (entries: string): string =>
+    `<?xml version="1.0" encoding="ISO-8859-1"?>
+     <feed xmlns="http://www.w3.org/2005/Atom">${entries}</feed>`;
+
+  const form4Adapter = (): EdgarAdapter =>
+    new EdgarAdapter({ formType: '4', userAgent: 'Test Person test@example.com' });
+
+  const JUNK_NEWEST = '0001665650-26-900001'; // 424B2, newest entry in the feed
+  const mixedFeed = feedXml(
+    [
+      entryXml(
+        JUNK_NEWEST,
+        '424B2',
+        '424B2 - JPMorgan Chase Financial Co. LLC (0001665650) (Filer)',
+      ),
+      entryXml('0000000004-26-000002', '4', '4 - Doe John (0000000004) (Reporting)'),
+      entryXml('0000000004-26-000003', '4/A', '4/A - Roe Jane (0000000005) (Reporting)'),
+      entryXml('0000000497-26-000004', '497K', '497K - Some Fund Trust (0000000497) (Filer)'),
+    ].join(''),
+  );
+
+  it('keeps only the 4/4A family; 424B2 and 497K junk never become items', () => {
+    const { items } = form4Adapter().parseFeed(mixedFeed, null);
+    // Feed order is newest-first; parseFeed emits oldest-first.
+    expect(items.map((i) => i.meta?.['formType'])).toEqual(['4/A', '4']);
+  });
+
+  it('the cursor remains a FEED position: junk entries still advance and stop it', () => {
+    // Newest entry is junk — the saved cursor must still point at it, so the
+    // next poll stops immediately instead of re-walking the page.
+    const first = form4Adapter().parseFeed(mixedFeed, null);
+    expect(first.nextCursor).toBe(JUNK_NEWEST);
+    const second = form4Adapter().parseFeed(mixedFeed, JUNK_NEWEST);
+    expect(second.items).toHaveLength(0);
+    expect(second.nextCursor).toBe(JUNK_NEWEST);
+  });
+
+  it('8-K keeps its genuine family variants (8-K/A, 8-K12B)', () => {
+    const eightKFeed = feedXml(
+      [
+        entryXml('0000000008-26-000001', '8-K', '8-K - Acme Corp (0000000008) (Filer)'),
+        entryXml('0000000008-26-000002', '8-K/A', '8-K/A - Acme Corp (0000000008) (Filer)'),
+        entryXml('0000000008-26-000003', '8-K12B', '8-K12B - Acme Corp (0000000008) (Filer)'),
+      ].join(''),
+    );
+    const { items } = adapter().parseFeed(eightKFeed, null);
+    expect(items).toHaveLength(3);
+  });
+
+  it('an entry with a MISSING category term is kept (fail-open for format drift)', () => {
+    const noTermEntry = `
+      <entry>
+        <title>4 - Poe Edgar (0000000006) (Reporting)</title>
+        <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/1/0000000004-26-000009-index.htm"/>
+        <summary type="html">Filed with the SEC.</summary>
+        <updated>2026-08-05T12:00:00-04:00</updated>
+        <id>urn:tag:sec.gov,2008:accession-number=0000000004-26-000009</id>
+      </entry>`;
+    const { items } = form4Adapter().parseFeed(feedXml(noTermEntry), null);
+    expect(items).toHaveLength(1);
+  });
+});
