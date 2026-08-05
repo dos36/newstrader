@@ -220,8 +220,17 @@ export async function measureReactions(
     );
   const benchmarkByClass = new Map(benchmarkRows.map((row) => [row.assetClass, row]));
 
-  // Per-run caches: instruments recur across clusters and every pair in a
-  // cluster shares its benchmark bars.
+  // Per-CLUSTER caches, cleared at every cluster boundary in the loop below.
+  //
+  // Scope matters for memory, not just speed: cache keys include the anchor
+  // timestamp, so entries are only ever re-hit by pairs of the SAME cluster
+  // (different clusters have different anchors) — a per-run cache therefore
+  // retains every pair's full bar window (up to ~16k rows for a crypto pair,
+  // × two anchor clocks) while providing zero cross-cluster hits. At 14 days
+  // of collection (~1,700 pairs in the nightly window) that reached gigabytes
+  // and OOM-killed the process. What the cache is genuinely for — every pair
+  // in a cluster sharing its benchmark (SPY/BTC) bars — survives per-cluster
+  // scoping intact, because pairs are iterated grouped by cluster.
   const minuteCache = new Map<string, { bars: CloseBar[]; sources: string[] }>();
   const dailyCache = new Map<string, CloseBar[]>();
 
@@ -399,7 +408,17 @@ export async function measureReactions(
     return { measured: true, horizonsWritten };
   };
 
+  // Group pairs by cluster so the per-cluster cache scoping above holds
+  // (selectDistinct returns rows in unspecified order).
+  pairRows.sort((a, b) => a.clusterId.localeCompare(b.clusterId));
+
+  let cacheClusterId: string | undefined;
   for (const pair of pairRows) {
+    if (pair.clusterId !== cacheClusterId) {
+      minuteCache.clear();
+      dailyCache.clear();
+      cacheClusterId = pair.clusterId;
+    }
     const anchor = anchorByCluster.get(pair.clusterId);
     if (anchor === undefined) continue; // unreachable: pairs derive from clusterRows
 
