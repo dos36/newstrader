@@ -50,6 +50,41 @@
       "when": 1784950384789,
       "tag": "0006_rules_lineage_fk",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786330903639,
+      "tag": "0007_m2_interpretation",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787335099850,
+      "tag": "0008_llm_signal_transport",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787357805613,
+      "tag": "0009_edgar_filing_documents",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787371819096,
+      "tag": "0010_filing_fetcher_version",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1787932561854,
+      "tag": "0011_m5_replay_run_metrics",
+      "breakpoints": true
     }
   ]
 }

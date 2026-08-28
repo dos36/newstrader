@@ -11,7 +11,7 @@
   "dependencies": {
     "@newstrader/core": "workspace:*",
     "fast-xml-parser": "^4.5.0",
-    "zod": "^3.24.0"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

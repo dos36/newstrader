@@ -46,7 +46,12 @@ import {
  * into conflict-do-nothing.
  */
 
-export const MEASURER_VERSION = 'm1';
+// Bumped m1 -> m2: the ladder's benchmark leg is now resolved at the bar the
+// instrument was actually priced on rather than at the nominal horizon
+// timestamp (reaction/math.ts). That changed the computed abnormal return for
+// every fall-forward (weekend/holiday/halt) anchor, so per the contract above
+// it ships as a new version alongside the old rows instead of overwriting them.
+export const MEASURER_VERSION = 'm2';
 
 /**
  * Publication-anchored variant: the SAME ladder/summary/recovery math anchored
@@ -63,7 +68,7 @@ export const MEASURER_VERSION = 'm1';
  * (small clock-skew allowance), and not a stale re-serve (claims older than
  * PUB_MAX_STALENESS_MS before receipt are republishing noise, not news).
  */
-export const PUB_MEASURER_VERSION = 'm1-pub';
+export const PUB_MEASURER_VERSION = 'm2-pub';
 
 // MIN_LINK_CONFIDENCE and BENCHMARK_SYMBOLS live in ../shared-constants.js and
 // ../bars/benchmarks.js respectively: both are also needed by

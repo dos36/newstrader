@@ -13,6 +13,7 @@ import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as schedulerTargets from 'aws-cdk-lib/aws-scheduler-targets';
+import type * as s3 from 'aws-cdk-lib/aws-s3';
 import type * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import type * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -24,11 +25,26 @@ const HANDLERS_SRC = path.resolve(DIRNAME, '..', '..', 'services', 'handlers', '
 /** OpsStack's kill-switch parameter — read each invocation by decide/execute (<=30s cache). */
 const KILL_SWITCH_PARAM = '/newstrader/kill-switch';
 
+/**
+ * SecureString holding the Anthropic API key (M2 interpret stage). Like the
+ * Massive key, created out of band — CloudFormation cannot create
+ * SecureStrings:
+ *   aws ssm put-parameter --type SecureString \
+ *     --name /newstrader/anthropic-api-key --value <key>
+ * OPTIONAL by design: until it exists, interpret-sweep warn-skips every
+ * invocation (zero LLM spend) and the rest of the stack runs normally.
+ */
+const ANTHROPIC_API_KEY_PARAM = '/newstrader/anthropic-api-key';
+
 export interface TradingStackProps extends StackProps {
   readonly dbSecret: secretsmanager.ISecret;
   readonly databaseName: string;
   /** OpsStack's alarm topic — trading alarms page the same address. */
   readonly alarmTopic: sns.ITopic;
+  /** DataStack's LLM audit bucket — full prompt+response blobs (llm/{date}/...). */
+  readonly llmAuditBucket: s3.Bucket;
+  /** DataStack's raw bucket — interpret reads item payloads back for ledes. */
+  readonly rawBucket: s3.Bucket;
 }
 
 /**
@@ -43,6 +59,11 @@ export interface TradingStackProps extends StackProps {
  * ******************************************************************
  *
  * Functions (all outside any VPC, §4.4):
+ *   interpret-sweep   rate(5 min), reserved concurrency 1 — M2: novel
+ *                     cluster×instrument pairs -> claude-sonnet-5 structured
+ *                     call -> llm_signals rows + audit blobs. Warn-skips until
+ *                     the Anthropic SecureString exists; spend-capped per UTC
+ *                     day; the LLM NEVER touches the money path.
  *   decide-sweep      rate(5 min), reserved concurrency 1 — pure engine over
  *                     undecided llm_signals; enqueues OrderIntents to q-orders.
  *                     Re-derives undelivered intents from decisions rows, so a
@@ -69,6 +90,7 @@ export interface TradingStackProps extends StackProps {
 export class TradingStack extends Stack {
   public readonly qOrders: sqs.Queue;
   public readonly qOrdersDlq: sqs.Queue;
+  public readonly interpretSweepFunction: lambdaNodejs.NodejsFunction;
   public readonly decideSweepFunction: lambdaNodejs.NodejsFunction;
   public readonly executeFunction: lambdaNodejs.NodejsFunction;
   public readonly positionManagerFunction: lambdaNodejs.NodejsFunction;
@@ -137,6 +159,56 @@ export class TradingStack extends Stack {
       alarm.addAlarmAction(alarmAction);
       alarm.addOkAction(alarmAction);
     };
+
+    // interpret-sweep (M2): every 5 minutes, upstream of decide-sweep.
+    // Timeout stays under the tick; INTERPRET_BATCH 15 keeps a full pass
+    // (~15 calls × a few seconds) inside it, and 15/5min = 4,320 pairs/day of
+    // headroom against a measured ~179/day. Reserved concurrency 1 also keeps
+    // exactly one caller against Anthropic rate limits.
+    this.interpretSweepFunction = new lambdaNodejs.NodejsFunction(this, 'InterpretSweep', {
+      entry: path.join(HANDLERS_SRC, 'interpret-sweep.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 512,
+      timeout: Duration.minutes(4),
+      reservedConcurrentExecutions: 1,
+      bundling,
+      environment: {
+        ...commonEnv,
+        ANTHROPIC_API_KEY_PARAM,
+        LLM_AUDIT_BUCKET: props.llmAuditBucket.bucketName,
+        RAW_BUCKET: props.rawBucket.bucketName,
+        INTERPRET_BATCH: '15',
+      },
+      logGroup: new logs.LogGroup(this, 'InterpretSweepLogs', {
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: RemovalPolicy.DESTROY,
+      }),
+      description:
+        'newstrader interpret-sweep (M2): novel cluster×instrument pairs -> claude-sonnet-5 -> llm_signals + audit blobs (the LLM never touches money)',
+      retryAttempts: 0,
+    });
+    props.dbSecret.grantRead(this.interpretSweepFunction);
+    grantKillSwitchRead(this.interpretSweepFunction);
+    this.interpretSweepFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ssm:GetParameter'],
+        resources: [
+          this.formatArn({ service: 'ssm', resource: `parameter${ANTHROPIC_API_KEY_PARAM}` }),
+        ],
+      }),
+    );
+    props.llmAuditBucket.grantWrite(this.interpretSweepFunction);
+    props.rawBucket.grantRead(this.interpretSweepFunction);
+
+    new scheduler.Schedule(this, 'InterpretSweepSchedule', {
+      schedule: scheduler.ScheduleExpression.rate(Duration.minutes(5)),
+      target: new schedulerTargets.LambdaInvoke(this.interpretSweepFunction, {
+        retryAttempts: 0,
+      }),
+      description: 'newstrader: interpret sweep every 5m (M2)',
+    });
 
     // decide-sweep: every 5 minutes; reserved concurrency 1 so a slow pass
     // queues behind itself; retryAttempts 0 — the next tick supersedes.
@@ -257,30 +329,27 @@ export class TradingStack extends Stack {
       }),
     );
 
-    // decide-sweep runs every 5 minutes: error RATE (a lone transient failure
+    // The two 5-minute sweeps alarm on error RATE (a lone transient failure
     // must not page; a sustained one must) — mirrors the poller alarms.
-    {
-      const errors = this.decideSweepFunction.metricErrors({
-        period: Duration.minutes(5),
-        statistic: 'Sum',
-      });
-      const invocations = this.decideSweepFunction.metricInvocations({
-        period: Duration.minutes(5),
-        statistic: 'Sum',
-      });
+    for (const [name, fn] of [
+      ['DecideSweep', this.decideSweepFunction],
+      ['InterpretSweep', this.interpretSweepFunction],
+    ] as const) {
+      const errors = fn.metricErrors({ period: Duration.minutes(5), statistic: 'Sum' });
+      const invocations = fn.metricInvocations({ period: Duration.minutes(5), statistic: 'Sum' });
       wire(
-        new cloudwatch.Alarm(this, 'DecideSweepErrorRate', {
+        new cloudwatch.Alarm(this, `${name}ErrorRate`, {
           metric: new cloudwatch.MathExpression({
             expression: 'IF(invocations > 0, 100 * errors / invocations, 0)',
             usingMetrics: { errors, invocations },
-            label: 'DecideSweep error rate %',
+            label: `${name} error rate %`,
             period: Duration.minutes(5),
           }),
           threshold: 25,
           comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
           evaluationPeriods: 3,
           treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-          alarmDescription: 'newstrader: DecideSweep error rate >=25% for 15m.',
+          alarmDescription: `newstrader: ${name} error rate >=25% for 15m.`,
         }),
       );
     }

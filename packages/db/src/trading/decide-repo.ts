@@ -300,7 +300,15 @@ export function roundSizedNotional(value: string): string {
 
 // ---------------------------------------------------------------- assembly --
 
-interface FeatureContext {
+/**
+ * Exported for the backtest, which reuses this assembler rather than growing a
+ * parallel one. Every query below is bounded by `now`, so passing a HISTORICAL
+ * instant reconstructs the features as of that instant — that property is the
+ * whole reason a backtest can share the live code path, and breaking it (adding
+ * an unbounded query, or reading a wall clock) silently introduces look-ahead
+ * into both callers at once.
+ */
+export interface FeatureContext {
   now: Date;
   events: ScheduledEventLite[];
   /** Broker-derived positions as of BATCH START. */
@@ -347,7 +355,7 @@ function toSignalInput(signal: UndecidedSignal): SignalInput {
  * result is zod-parsed so anything persisted is guaranteed to round-trip
  * through replay's DecideFeatures.parse.
  */
-async function assembleFeatures(
+export async function assembleFeatures(
   db: Db,
   signal: UndecidedSignal,
   quote: QuoteSnapshot | null,
@@ -418,8 +426,12 @@ async function assembleFeatures(
  * Decision-time quote: the latest minute-bar close at-or-before now, no older
  * than QUOTE_MAX_AGE_MS. Bar closes carry no spread (spreadBps null) — real
  * quotes fill that in post-NBBO (architecture §5.5).
+ *
+ * Exported since M2: the interpret sweep reuses the same quote to compute the
+ * prompt's price-move-since-anchor context, so decide and interpret can never
+ * disagree about what "the current price" means.
  */
-async function loadDecisionQuote(
+export async function loadDecisionQuote(
   db: Db,
   instrumentId: string,
   now: Date,
@@ -452,23 +464,36 @@ async function loadDecisionQuote(
  * close is accepted only when a LATER bar proves the gap was non-trading
  * (overnight/weekend/halt). Null otherwise — the stale-move feature is then
  * "not computable", which the engine treats as skip-safe.
+ *
+ * Exported since M2 — see loadDecisionQuote's note.
  */
-async function loadSettledCloseAt(db: Db, instrumentId: string, at: Date): Promise<string | null> {
+export async function loadSettledCloseAt(
+  db: Db,
+  instrumentId: string,
+  at: Date,
+): Promise<string | null> {
+  // Select by CLOSE time, not open. A minute bar's `ts` is its OPEN, so a bar
+  // whose open is <= the anchor still CLOSES up to 59s after the news — baking
+  // post-news trading into the "before" price and shrinking the observed move
+  // (a real 350 bps move reads as 290 and passes a 300 bps threshold). The
+  // reaction measurer already shifts the anchor by one bar for this reason
+  // (reaction/math.ts anchorLookupTs); the trading path never copied it.
+  const lookupAt = new Date(at.getTime() - MINUTE_MS);
   const rows = await db
     .select({ ts: priceBars1m.ts, close: priceBars1m.close })
     .from(priceBars1m)
-    .where(and(eq(priceBars1m.instrumentId, instrumentId), lte(priceBars1m.ts, at)))
+    .where(and(eq(priceBars1m.instrumentId, instrumentId), lte(priceBars1m.ts, lookupAt)))
     .orderBy(desc(priceBars1m.ts))
     .limit(1);
   const row = rows[0];
   if (row === undefined) return null;
-  if (at.getTime() - row.ts.getTime() <= DEFAULT_PRICE_STALENESS_MINUTES * MINUTE_MS) {
+  if (lookupAt.getTime() - row.ts.getTime() <= DEFAULT_PRICE_STALENESS_MINUTES * MINUTE_MS) {
     return row.close;
   }
   const later = await db
     .select({ ts: priceBars1m.ts })
     .from(priceBars1m)
-    .where(and(eq(priceBars1m.instrumentId, instrumentId), gt(priceBars1m.ts, at)))
+    .where(and(eq(priceBars1m.instrumentId, instrumentId), gt(priceBars1m.ts, lookupAt)))
     .limit(1);
   return later.length > 0 ? row.close : null;
 }

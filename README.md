@@ -111,15 +111,20 @@ signals across instruments) in one pass can never jointly evade the `no_existing
 
 **Replay Mode A vs Mode B.** `replay --rules <label>` re-executes the engine from the
 features/quote_snapshot stored on each signal's LIVE decision, never from live queries; replaying
-the SAME label the live decisions were produced under (Mode A) must reproduce them bit-for-bit
-(CI-gated, including one real-engine assertion in the CLI e2e suite — not just the stub engine
-in the DB package's own regression test). Replaying a DIFFERENT label (Mode B) reuses the SAME
-portfolio features (open positions, equity) the live run actually saw, which a different rules
-version's own trajectory would NOT have produced — `replay` prints a visible warning
-(`mode_b_unsound_portfolio_features`) when this applies, rather than presenting Mode-B results as
-trustworthy. `replay:compare --a <run|live> --b <run|live>` diffs any two runs (action / size /
-skip-reason changes); a `live` side is scoped to one rules version via `--live-rules <label>`
-(defaults to the other side's own label).
+the SAME label the live decisions were produced under (Mode A, the default) must reproduce them
+bit-for-bit (CI-gated, including one real-engine assertion in the CLI e2e suite — not just the
+stub engine in the DB package's own regression test). Replaying a DIFFERENT label needs Mode B:
+`replay --mode b` keeps every WORLD feature (velocity, calendar, prices, liquidity) from the live
+snapshot but recomputes the PORTFOLIO features (open positions, equity) from the run's OWN
+simulated fills — production fill model, exits walked over recorded bars between decisions — and
+writes a `replay_run_metrics` row (hit rate, avg bps/trade, profit factor, max drawdown,
+exposure-adjusted return). The world/portfolio split is tagged in
+`packages/core/src/trading/contracts.ts` (`WORLD_FEATURE_KEYS` / `PORTFOLIO_FEATURE_KEYS`) and a
+test fails if a new feature is added untagged. Running a cross-label replay WITHOUT `--mode b`
+still prints the `mode_b_unsound_portfolio_features` warning rather than presenting
+reused-portfolio results as trustworthy. `replay:compare --a <run|live> --b <run|live>` diffs any
+two runs (action / size / skip-reason changes); a `live` side is scoped to one rules version via
+`--live-rules <label>` (defaults to the other side's own label).
 
 **The default rules trade NOTHING — on purpose.** `rules:init` seeds `v1-conservative`: long-only,
 with an EMPTY event-type whitelist. Entries into the whitelist are earned by event-study evidence
@@ -152,6 +157,39 @@ to "just trade". The parameter itself is NOT CDK-managed (a template change woul
 silently un-trip a manual `halt` on every redeploy) — create it once:
 `aws ssm put-parameter --name /newstrader/kill-switch --value run --type String`.
 
+## Milestone 5: evaluation and reporting
+
+**`eval:signals` answers "does the LLM's output mean anything".** It joins `llm_signals` to
+`reaction_measurements` (pinned to one `measurer_version`, default `m2`) and prints: confidence
+deciles vs 1d directional hit rate with Wilson 95% CIs and the Expected Calibration Error;
+materiality deciles vs median |1d abnormal| plus Spearman rank correlations for materiality and
+`expected_move_bps`; per-event-type hit rates and big-move shares; neutral signals scored
+separately (`hit = |abn 1d| < 100 bps`, with 50/150 sensitivity); reaction speed (median minutes
+to half the 1d move) and capture ratios `abn_h/abn_1d`; and the **event-study → whitelist bridge**
+— direction-signed drift per event type × horizon with a "beats costs?" verdict (`--cost-bps`,
+default 20; a YES additionally requires n ≥ 20). Every table can be cut to one NY-session bucket
+(`--session weekend|pre|rth|post|overnight`, computed in SQL from the anchor at
+`America/New_York`) — the `rth` cut is the market-hours-only alpha-decay number the
+minutes-migration decision needs. Hygiene defaults: transport `api` only, retrospective rows
+excluded (`--include-retrospective` to override, e.g. for a v2+ prompt that reconstructs inputs at
+the observation lag), and every table carries a cluster-deduped robustness column (max-confidence
+pair per cluster). `--versions a,b` compares prompt versions side by side on the intersection of
+answered pairs, with a paired direction-flip/confidence-delta table; `--split <iso> [--holdout]`
+gives a tune/holdout discipline. The report also prints a **next-open reaction** table for
+off-hours anchors: anchor settled close → close of the first RTH bar at/after the next 09:30 ET,
+beta/SPY-adjusted, with `gap_capture = next-open abnormal / 1d abnormal` (query-level; promote to
+a `m3` measurer only if it proves useful).
+
+**`eval:latency` prices our ingestion delay in bps.** The measurer writes every pair under two
+clocks (`m2` = received, `m2-pub` = published); the per-pair, per-horizon difference between the
+two abnormal-return curves is what latency costs — the evidence that decides whether the $99/mo
+Benzinga add-on pays (roadmap §7).
+
+**`report:weekly` renders the operator's markdown digest** — paper P&L, the decision funnel with
+rejected-signal counts by gate, hit rate by event type, the calibration table, and the best/worst
+closed trades with the LLM's own ≤2-sentence reasoning attached (`--out <file>` writes it to
+disk).
+
 ## Quickstart
 
 ```bash
@@ -168,9 +206,13 @@ pnpm cli process          # cluster + resolve everything not yet clustered
 pnpm cli resolve          # backfill instrument links for items ingested before the sync
 pnpm cli bars:backfill    # benchmarks + daily bars + minute bars around recent stories (3d default)
 pnpm cli calendar:sync    # FOMC/CPI/NFP/GDP/PCE (+ earnings with FINNHUB_API_KEY) → scheduled_events
+                          #   --backfill-from YYYY-MM-DD recovers past events for analytics
+                          #   (rows get meta.backfilled=true; Finnhub free serves ~30 days back)
 pnpm cli measure          # reaction ladder + summaries + recovery over the last 7d of clusters
+pnpm cli interpret        # M2: LLM-interpret novel linked clusters → llm_signals (needs ANTHROPIC_API_KEY)
+pnpm cli interpret --mode cli   # same, on your Claude subscription instead of a key — DEV ONLY (see below)
 pnpm cli rules:init       # seed the v1-conservative rules version (trades nothing by design)
-pnpm cli decide           # decide every undecided signal (expect examined=0 until M2 lands)
+pnpm cli decide           # decide every undecided signal (signals flow once interpret runs)
 pnpm cli positions        # derived open positions + paper account state
 pnpm cli stats            # the KPI report (ingest, resolution, reaction, calendar, trading)
 ```
@@ -181,37 +223,146 @@ news. Raw payloads land under `./data/raw/` locally (S3 when deployed).
 
 ### CLI commands
 
-| Command                                                                          | What it does                                                                                                                                                                                               |
-| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm cli sources:seed`                                                          | Upsert `news_sources` rows for every enabled adapter, print the table                                                                                                                                      |
-| `pnpm cli universe:sync`                                                         | Sync instruments (S&P 500 + crypto), point-in-time SPX membership, alias dictionary                                                                                                                        |
-| `pnpm cli poll [sourceKey] [--loop <s>]`                                         | One poll cycle (or forever with `--loop`): cursor → fetch → raw store → `raw_news_items`                                                                                                                   |
-| `pnpm cli process [--batch <n>] [--loop <s>]`                                    | Attach unclustered items to clusters + resolve them to instruments, close stale clusters (`--loop` = the local stand-in for the deployed process Lambda)                                                   |
-| `pnpm cli resolve [--batch <n>]`                                                 | Backfill `item_instrument_links` for every raw item without an r1 link                                                                                                                                     |
-| `pnpm cli bars:record [--loop <s>]`                                              | One bars-recorder tick: Massive full-market snapshot + Kraken OHLC → `price_bars_1m`                                                                                                                       |
-| `pnpm cli bars:backfill [--from/--to/--days]`                                    | Benchmarks + daily bars (beta window) + event-window minute bars via aggregates                                                                                                                            |
-| `pnpm cli calendar:sync [--horizon-days <n>]`                                    | Macro + earnings calendars → `scheduled_events` (90d forward window by default)                                                                                                                            |
-| `pnpm cli measure [--since-hours <n>]`                                           | Reaction ladder / summary / recovery for clusters first seen in the window (default **216h** — ~9 days, so 3d/5d horizons spanning a weekend still settle; a shorter window would strand them permanently) |
-| `pnpm cli rules:init`                                                            | Seed the shipped default rules version (long-only, empty whitelist — trades nothing)                                                                                                                       |
-| `pnpm cli decide [--rules/--batch/--execute]`                                    | Engine over undecided signals → decisions rows; `--execute` places pending intents (sim)                                                                                                                   |
-| `pnpm cli positions`                                                             | Derived positions, account state, unrealized + realized P&L (from sim fills)                                                                                                                               |
-| `pnpm cli manage [--rules <label>]`                                              | One position-manager pass: exit evaluation → replayable `action=close` decisions                                                                                                                           |
-| `pnpm cli replay --rules <label> [--from/--to]`                                  | Replay the stored signal log under a rules version (Mode A: live label ⇒ bit-for-bit; warns on Mode B)                                                                                                     |
-| `pnpm cli replay:compare --a <run\|live> --b <run\|live> [--live-rules <label>]` | Per-signal divergence report between two runs (`--live-rules` scopes a `live` side; defaults to the other side's label)                                                                                    |
-| `pnpm cli stats`                                                                 | Items/day, dedup ratio, clusters, resolution coverage, reaction + alpha-decay medians, calendar, trading                                                                                                   |
-| `pnpm cli db:ping`                                                               | Connect + `SELECT 1`                                                                                                                                                                                       |
+| Command                                                                            | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm cli sources:seed`                                                            | Upsert `news_sources` rows for every enabled adapter, print the table                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `pnpm cli universe:sync`                                                           | Sync instruments (S&P 500 + crypto), point-in-time SPX membership, alias dictionary                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `pnpm cli poll [sourceKey] [--loop <s>]`                                           | One poll cycle (or forever with `--loop`): cursor → fetch → raw store → `raw_news_items`                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `pnpm cli process [--batch <n>] [--loop <s>]`                                      | Attach unclustered items to clusters + resolve them to instruments, close stale clusters (`--loop` = the local stand-in for the deployed process Lambda)                                                                                                                                                                                                                                                                                                                                                                                         |
+| `pnpm cli resolve [--batch <n>]`                                                   | Backfill `item_instrument_links` for every raw item without an r1 link                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `pnpm cli bars:record [--loop <s>]`                                                | One bars-recorder tick: Massive full-market snapshot + Kraken OHLC → `price_bars_1m`                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `pnpm cli bars:backfill [--from/--to/--days]`                                      | Benchmarks + daily bars (beta window) + event-window minute bars via aggregates                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `pnpm cli calendar:sync [--horizon-days <n>]`                                      | Macro + earnings calendars → `scheduled_events` (90d forward window by default)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `pnpm cli measure [--since-hours <n>]`                                             | Reaction ladder / summary / recovery for clusters first seen in the window (default **216h** — ~9 days, so 3d/5d horizons spanning a weekend still settle; a shorter window would strand them permanently)                                                                                                                                                                                                                                                                                                                                       |
+| `pnpm cli edgar:documents [--batch/--loop/--form-types/--refetch]`                 | Fetch SEC filing bodies + press-release exhibits for EDGAR items so the interpreter reads what the filing says, not just its form type (median stored text 23k chars vs 57 in the Atom summary). Oldest first, idempotent per item, prints `left to fetch`; needs `EDGAR_USER_AGENT` — see [SEC filing text](#sec-filing-text)                                                                                                                                                                                                                   |
+| `pnpm cli interpret [--batch/--loop/--lookback-hours/--dry-run/--mode/--backfill]` | M2: one claude-sonnet-5 structured call per novel cluster×instrument pair (link ≥ 0.75) → `llm_signals` + full audit blob; kill-switch- and spend-cap-guarded. `--retrospective-from/-to <iso>` backfills older windows with `retrospective=true` (quarantined from the live decide queue); `--dry-run` prints the first prompt, zero calls; `--mode cli` swaps the API key for your Claude subscription (dev only); `--backfill` works the whole backlog oldest-first and is safe to re-run — see [Backfilling old days](#backfilling-old-days) |
+| `pnpm cli rules:init`                                                              | Seed the shipped default rules version (long-only, empty whitelist — trades nothing)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `pnpm cli decide [--rules/--batch/--execute]`                                      | Engine over undecided signals → decisions rows; `--execute` places pending intents (sim)                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `pnpm cli positions`                                                               | Derived positions, account state, unrealized + realized P&L (from sim fills)                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `pnpm cli manage [--rules <label>]`                                                | One position-manager pass: exit evaluation → replayable `action=close` decisions                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `pnpm cli replay --rules <label> [--from/--to] [--mode a\|b]`                      | Replay the stored signal log under a rules version. Mode A (default): live label ⇒ bit-for-bit; warns on a cross-label reuse. Mode B (`--mode b [--equity/--slippage-bps]`): simulate this run's own portfolio and write `replay_run_metrics` (hit rate, profit factor, max drawdown, exposure-adjusted return)                                                                                                                                                                                                                                  |
+| `pnpm cli replay:compare --a <run\|live> --b <run\|live> [--live-rules <label>]`   | Per-signal divergence report between two runs (`--live-rules` scopes a `live` side; defaults to the other side's label)                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `pnpm cli eval:signals [--versions/--measurer/--session/--split/--cost-bps/…]`     | M5 calibration & quality report: confidence deciles + Wilson CIs + ECE, materiality/expected-move Spearman, per-event-type hit rates, neutral scoring, reaction speed + capture ratios, session cuts, the whitelist bridge with beats-costs verdicts, `already_expected` × `calendar_match`, and the next-open reaction for off-hours anchors — see [Milestone 5](#milestone-5-evaluation-and-reporting)                                                                                                                                         |
+| `pnpm cli eval:latency [--source-horizon <h>]`                                     | Ingestion-latency pricing: per-pair `m2-pub` − `m2` abnormal-return delta per horizon and per first source — the bps our ingest delay costs (the Benzinga evidence)                                                                                                                                                                                                                                                                                                                                                                              |
+| `pnpm cli report:weekly [--days <n>] [--out <file>]`                               | Weekly markdown report: paper P&L, decision funnel + rejected-signal counts by gate, hit rate by event type, calibration table, best/worst trades with the LLM's reasoning                                                                                                                                                                                                                                                                                                                                                                       |
+| `pnpm cli stats`                                                                   | Items/day, dedup ratio, clusters, resolution coverage, reaction + alpha-decay medians, calendar, trading                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `pnpm cli db:ping`                                                                 | Connect + `SELECT 1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
+### Backfilling old days
+
+The live sweep only looks at the last 24 hours. Anything older needs a retrospective window, and
+those rows are stamped `retrospective=true` so they can never drive a live decision — they are for
+measurement only.
+
+**Fetch the filing text first** — an 8-K without it reaches the model as a form type and item
+codes only (see [SEC filing text](#sec-filing-text)):
+
+```bash
+pnpm cli edgar:documents --batch 200 --loop 5
+```
+
+**Then one re-runnable command works the whole backlog, oldest first:**
+
+```bash
+pnpm cli interpret --backfill --batch 50
+```
+
+Each pass prints how many pairs are left (`left to process`), so you know when to stop. Run it
+again to take the next 50. Each pass takes the oldest un-interpreted
+(cluster × instrument) pairs, and a written row leaves the queue — so re-running never redoes work.
+The backlog is empty when `examined` reports 0.
+
+`--backfill` picks the window itself: everything from before your records begin up to the live
+lookback's lower edge (`now - 24h`). That bound tiles exactly with the live sweep, so no cluster
+falls between the two passes and the backfill never claims one the live sweep should have.
+
+To count first, without calling or writing:
+
+```bash
+pnpm cli interpret --backfill --dry-run --batch 5000
+```
+
+An explicit window still works when you want one specific day:
+
+```bash
+pnpm cli interpret --batch 500 --retrospective-from 2026-07-10T00:00:00Z --retrospective-to 2026-07-11T00:00:00Z
+```
+
+Watch the `spent today $` column: the per-UTC-day cap (`LLM_DAILY_SPEND_USD_CAP`) stops a pass
+mid-window, and the next run picks up where it stopped. `--loop` is refused with any retrospective
+window — a backfill is one-shot by design, so you drive the repetition.
+
+### SEC filing text
+
+An EDGAR item's stored payload is the `getcurrent` Atom entry, and its summary is filing
+**metadata** — `Filed: 2026-08-21 AccNo: … Size: 11 KB`. Measured over 900 sampled cluster items,
+the median extracted text per source is 456 characters for Massive articles, 167 for RSS, and **57
+for EDGAR**. So the highest-signal source in the pipeline reached the model with no statement of
+what happened.
+
+`pnpm cli edgar:documents` fixes that. Per filing it makes two requests — `index.json` for the
+archive directory, then each content document — strips the HTML, and stores the flattened text for
+the interpreter. Measured on the first 5 real filings: **23,000 characters each**, against 57
+before.
+
+It keeps the **exhibits** as well as the primary document. For an Item 2.02 earnings 8-K the primary
+document often just says "see Exhibit 99.1", and Exhibit 99.1 is the press release with the numbers.
+
+- **Idempotent per item.** A filing is fetched once and reused by every prompt version and re-run.
+  Re-run the command to continue; it walks oldest-first and prints `left to fetch`.
+- **8-K only by default.** Form 4 and the 424B/497 prospectus families carry no interpretable event;
+  `--form-types` overrides.
+- **Failures retry up to 3 times, then leave the queue** — one unreachable filing cannot stall it.
+  A listing with no content documents is terminal, not retried.
+- **`--refetch`** re-fetches filings that already have text, for when the extractor improves. Blobs
+  are keyed per item, so it overwrites in place.
+- **Requires `EDGAR_USER_AGENT`** ("Name email@example.com") — SEC 403s requests without a contact
+  string. The fetcher paces itself well under SEC's 10 req/s ceiling.
+
+Prompt version `v3` tells the model that filing text may be present and may be truncated. v1 and v2
+never see it.
+
+### Interpret transports: api vs cli
+
+`pnpm cli interpret` can reach the model two ways. Only one of them produces rows you may measure.
+
+|                              | `--mode api` (default)        | `--mode cli`                                                           |
+| ---------------------------- | ----------------------------- | ---------------------------------------------------------------------- |
+| Auth                         | `ANTHROPIC_API_KEY`           | your Claude subscription, via the `claude` CLI                         |
+| Sets `effort` / `max_tokens` | yes                           | **no** — the CLI exposes neither                                       |
+| Schema enforced              | yes, at the API               | no — the reply is scraped and re-validated locally, with one re-ask    |
+| System prompt                | exactly the registered prompt | the registered prompt **appended** to Claude Code's own harness prompt |
+| Overhead per call            | none                          | **~25.7k harness tokens**, measured                                    |
+| Replayable                   | yes                           | no — the harness prompt is not versioned by us                         |
+| Deployed                     | yes (interpret-sweep Lambda)  | refused — the client throws when `AWS_LAMBDA_FUNCTION_NAME` is set     |
+
+Use `--mode cli` to iterate on the prompt before you have a key. Do not use it for anything you
+intend to measure. Every `cli` row is marked so it stays separable:
+
+- `llm_signals.transport = 'cli'` (a CHECK constraint keeps the column to `api`/`cli`);
+- the `signal_key` gains a `:cli` suffix, so a dev call never occupies the slot the real API call
+  will want — the same pair stays a candidate for `--mode api`;
+- the audit blob records `contractDivergence` (what was requested vs what actually applied).
+
+**`cost_usd` on a `cli` row over-states the interpretation.** A measured local run billed **$0.15**
+for one call (39,717 cache-creation tokens) where the same call over the API bills under a cent.
+The harness prefix is counted on purpose: the per-day spend breaker must over-estimate, never under.
+It also means `input_tokens`/`output_tokens` on `cli` rows are near-meaningless — the CLI reports
+almost everything as cache creation.
+
+Exclude dev rows from any analysis with `WHERE transport = 'api'`.
 
 ## Repo layout
 
-| Path                | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `docs/`             | The approved architecture (the contract everything must match)                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `packages/core`     | Zod message contracts (`RawItemV1`), M4 trading contracts, ids/hashing, pure similarity helpers, `decide/` (the pure decision engine: gates, fixed-point sizing, exit rules), `broker/` (the pure SimBroker fill model) — zero AWS imports, zero I/O in the engine                                                                                                                                                                                                                  |
-| `packages/db`       | Drizzle schema, migrations, advisory-locked clustering repo, `universe/` (S&P 500 + SEC + aliases sync), `resolver/` (dictionary matcher + link persistence), `bars/` (Massive/Kraken clients + immutable bar repo), `reaction/` (abnormal-return math + measurer), `calendar/` (macro/earnings schedules + `already_expected` matcher), `trading/` (signals/rules repos, decide driver, replay), `execution/` (SimBrokerAdapter, derived positions, position manager, kill switch) |
-| `packages/adapters` | `SourceAdapter` implementations (EDGAR, Massive, RSS) + `FsRawStore`                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `services/handlers` | Lambda entries (`poll.ts`, `process.ts`, `bars-record.ts`, `calendar-sync.ts`, `measure.ts`, `universe-sync.ts`, `resolve-sweep.ts`, `decide-sweep.ts`, `execute.ts`, `position-manager.ts`) and `lib/` — the shared ingest/trading cores both the CLI and Lambdas run, plus `S3RawStore` and a minimal SigV4/SSM/Secrets client                                                                                                                                                    |
-| `services/cli`      | `newstrader` CLI (`main.ts`) + the end-to-end fixture tests (ingest→measure and signal→decide→fill→close)                                                                                                                                                                                                                                                                                                                                                                           |
-| `infra/`            | CDK stacks: data (RDS/S3), ingest (schedulers → pollers → SQS → process), analytics (bars/calendar/measure/universe/resolve schedules), trading (decide-sweep → q-orders → execute + position-manager; SIM venue only), ops (alarms, budget, kill switch)                                                                                                                                                                                                                           |
+| Path                | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/`             | The approved architecture (the contract everything must match)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `packages/core`     | Zod message contracts (`RawItemV1`), M4 trading contracts, ids/hashing, pure similarity helpers, `decide/` (the pure decision engine: gates, fixed-point sizing, exit rules), `broker/` (the pure SimBroker fill model), `interpret/` (M2: event taxonomy, output schema, versioned prompt registry — pure) — zero AWS imports, zero I/O in the engine                                                                                                                                                                                                                                                  |
+| `packages/db`       | Drizzle schema, migrations, advisory-locked clustering repo, `universe/` (S&P 500 + SEC + aliases sync), `resolver/` (dictionary matcher + link persistence), `bars/` (Massive/Kraken clients + immutable bar repo), `reaction/` (abnormal-return math + measurer), `calendar/` (macro/earnings schedules + `already_expected` matcher), `trading/` (signals/rules repos, decide driver, replay), `execution/` (SimBrokerAdapter, derived positions, position manager, kill switch), `llm/` (M2: Anthropic client seam, lede extraction, interpret sweep + spend breaker, audit trail, golden-set eval) |
+| `packages/adapters` | `SourceAdapter` implementations (EDGAR, Massive, RSS) + `FsRawStore`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `services/handlers` | Lambda entries (`poll.ts`, `process.ts`, `bars-record.ts`, `calendar-sync.ts`, `measure.ts`, `universe-sync.ts`, `resolve-sweep.ts`, `interpret-sweep.ts`, `decide-sweep.ts`, `execute.ts`, `position-manager.ts`) and `lib/` — the shared ingest/trading cores both the CLI and Lambdas run, plus `S3RawStore` and a minimal SigV4/SSM/Secrets client                                                                                                                                                                                                                                                  |
+| `services/cli`      | `newstrader` CLI (`main.ts`) + the end-to-end fixture tests (ingest→measure and signal→decide→fill→close)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `infra/`            | CDK stacks: data (RDS/S3), ingest (schedulers → pollers → SQS → process), analytics (bars/calendar/measure/universe/resolve schedules), trading (decide-sweep → q-orders → execute + position-manager; SIM venue only), ops (alarms, budget, kill switch)                                                                                                                                                                                                                                                                                                                                               |
 
 One flow, two runners: EventBridge → poller Lambda → S3 + Postgres → SQS → process Lambda in AWS;
 the CLI runs the exact same `runPoll`/`runProcess` core against the local filesystem and DB.
@@ -239,12 +390,15 @@ race on truncation; the connection user needs `CREATEDB` (the docker-compose sup
 The CDK app in `infra/` deploys the pollers on 1–2 min schedules plus the analytics jobs:
 bars-record every minute (24/7 — crypto trades weekends; off-hours equity snapshots no-op on the
 conflict-do-nothing upsert), universe-sync and calendar-sync daily, measure nightly, resolve-sweep
-hourly. The trading stack adds decide-sweep every 5 min → q-orders → execute (batch 5, partial
+hourly. The trading stack adds interpret-sweep every 5 min (M2: novel linked clusters →
+claude-sonnet-5 → `llm_signals`, audit blobs to the LLM bucket, warn-skips until its key exists),
+decide-sweep every 5 min → q-orders → execute (batch 5, partial
 batch failures, kill switch re-checked at execution) and the position manager every 15 min — all
 sim-venue only, with DLQ/staleness/error alarms on the ops topic and `ENGINE_VERSION` stamped
 from the git SHA at synth. One-time prerequisites: create the SSM SecureStrings
 (`/newstrader/edgar-user-agent`, `/newstrader/massive-api-key`, and optionally
-`/newstrader/finnhub-api-key` — until it exists the calendar sync warn-skips earnings), create the
+`/newstrader/finnhub-api-key` — until it exists the calendar sync warn-skips earnings — and
+`/newstrader/anthropic-api-key` — until it exists interpret-sweep warn-skips, zero LLM spend), create the
 kill-switch parameter (`aws ssm put-parameter --name /newstrader/kill-switch --value run --type String` —
 NOT CDK-managed, see the OpsStack comment: a managed `StringParameter` would silently un-trip a
 manual halt on every unrelated redeploy), and pass the `DbAllowlistCidr` / `AlertEmail` parameters

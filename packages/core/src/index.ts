@@ -10,3 +10,7 @@ export * from './trading/contracts.js';
 // see the bars/calendar http.js notes in packages/db).
 export * from './decide/index.js';
 export * from './broker/index.js';
+// M2: pure interpretation layer (taxonomy, schema, prompt, registry).
+export * from './interpret/index.js';
+// M5: evaluation math (calibration statistics, per-run trade metrics).
+export * from './eval/index.js';

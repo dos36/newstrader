@@ -35,7 +35,7 @@ import {
   reactionSummary,
   recoveryMeasurements,
 } from '../schema.js';
-import { MEASURER_VERSION, measureReactions } from './measure-repo.js';
+import { MEASURER_VERSION, PUB_MEASURER_VERSION, measureReactions } from './measure-repo.js';
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 
@@ -486,8 +486,8 @@ describe.skipIf(!testDatabaseUrl)('reaction measure repo (integration)', () => {
     expect(totals.pubSkippedNoAnchor).toBe(0);
 
     const rows = await db.select().from(reactionMeasurements);
-    const m1 = rows.filter((row) => row.measurerVersion === 'm1');
-    const m1pub = rows.filter((row) => row.measurerVersion === 'm1-pub');
+    const m1 = rows.filter((row) => row.measurerVersion === MEASURER_VERSION);
+    const m1pub = rows.filter((row) => row.measurerVersion === PUB_MEASURER_VERSION);
     expect(m1.length).toBeGreaterThan(0);
     expect(m1pub.length).toBeGreaterThan(0);
     // The pub rows anchor on the PUBLICATION claim, not our receipt clock.
@@ -518,7 +518,7 @@ describe.skipIf(!testDatabaseUrl)('reaction measure repo (integration)', () => {
     expect(totals.pubPairs).toBe(0);
     expect(totals.pubSkippedNoAnchor).toBe(1);
     const rows = await db.select().from(reactionMeasurements);
-    expect(rows.every((row) => row.measurerVersion === 'm1')).toBe(true);
+    expect(rows.every((row) => row.measurerVersion === MEASURER_VERSION)).toBe(true);
   });
 
   it('admits a 0.8-confidence crypto-keyword link that the old 0.85 threshold excluded', async () => {

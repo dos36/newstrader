@@ -20,6 +20,16 @@ import { defaultFetch, type FetchLike } from './http.js';
  * the sync-level deps factory (calendar-repo.ts) skips the source with a
  * console.warn instead, mirroring allAdapters in packages/adapters.
  *
+ * RESPONSE CAP (verified live 2026-08-09): free-tier responses silently cap at
+ * 1,500 releases, keeping the LATEST dates — a 38-day earnings-season request
+ * returned exactly 1,500 rows covering only its final 9 days, with no error
+ * and no marker. Even a single season week runs ~1,480. fetchEarnings
+ * therefore chunks the range (CHUNK_DAYS) and recursively halves any chunk
+ * that comes back at the cap, so truncation is structurally impossible; a
+ * single DAY at the cap throws, because that loss cannot be subdivided away.
+ * Free keys also serve only ~30 days of history (day 31 returns zero rows) —
+ * the sync logs earningsServedFrom so that floor stays visible.
+ *
  * scheduledAt convention (ET wall clock, DST-correct via et-time.ts):
  *   bmo (before market open)  → 08:30 ET
  *   amc (after market close)  → 16:30 ET
@@ -32,6 +42,16 @@ import { defaultFetch, type FetchLike } from './http.js';
  */
 
 export const FINNHUB_BASE_URL = 'https://finnhub.io';
+
+/** Free-tier silent truncation threshold, measured 2026-08-09 (docstring). */
+export const RESPONSE_CAP = 1500;
+/**
+ * Initial request width. Off-season weeks fit easily; season weeks (~1,480
+ * entries observed) exceed the cap and are halved by fetchCapSafe until they
+ * fit — worst case ~4 extra requests per season fortnight, well inside the
+ * free tier's 60 req/min.
+ */
+const CHUNK_DAYS = 14;
 
 const EARNINGS_HOUR_ET: Record<string, { hour: number; minute: number }> = {
   bmo: { hour: 8, minute: 30 },
@@ -102,6 +122,42 @@ export class FinnhubEarningsSource {
         `Finnhub earnings range must be YYYY-MM-DD, got from="${range.from}" to="${range.to}"`,
       );
     }
+    const entries: EarningsCalendarEntry[] = [];
+    for (const chunk of dayChunks(range.from, range.to, CHUNK_DAYS)) {
+      entries.push(...(await this.fetchCapSafe(chunk)));
+    }
+    if (entries.length === 0) {
+      // A multi-week window over the whole US market is never legitimately
+      // empty; zero means a broken query/entitlement, not a quiet calendar.
+      // (Individual chunks MAY be empty: weekends, and history past the
+      // free tier's ~30-day floor — the aggregate is what must be non-zero.)
+      throw new Error(
+        `Finnhub earnings returned zero releases for ${range.from}..${range.to} — ` +
+          'refusing to sync silence.',
+      );
+    }
+    return entries;
+  }
+
+  /**
+   * Fetch one chunk; if the response sits at the silent 1,500-entry cap,
+   * halve the chunk and recurse, because a capped response has already
+   * dropped the earliest days without any error signal (docstring above).
+   */
+  private async fetchCapSafe(range: EarningsDateRange): Promise<EarningsCalendarEntry[]> {
+    const entries = await this.fetchOnce(range);
+    if (entries.length < RESPONSE_CAP) return entries;
+    if (range.from === range.to) {
+      throw new Error(
+        `Finnhub earnings for the single day ${range.from} hit the ${RESPONSE_CAP}-entry ` +
+          'response cap — cannot subdivide further, refusing silent data loss.',
+      );
+    }
+    const [left, right] = splitRange(range);
+    return [...(await this.fetchCapSafe(left)), ...(await this.fetchCapSafe(right))];
+  }
+
+  private async fetchOnce(range: EarningsDateRange): Promise<EarningsCalendarEntry[]> {
     const url = new URL('/api/v1/calendar/earnings', this.baseUrl);
     url.searchParams.set('from', range.from);
     url.searchParams.set('to', range.to);
@@ -112,16 +168,7 @@ export class FinnhubEarningsSource {
     if (!res.ok) {
       throw new Error(`Finnhub earnings request failed: ${res.status} ${res.statusText}`);
     }
-    const entries = this.parseResponse((await res.json()) as unknown);
-    if (entries.length === 0) {
-      // A multi-week window over the whole US market is never legitimately
-      // empty; zero means a broken query/entitlement, not a quiet calendar.
-      throw new Error(
-        `Finnhub earnings returned zero releases for ${range.from}..${range.to} — ` +
-          'refusing to sync silence.',
-      );
-    }
-    return entries;
+    return this.parseResponse((await res.json()) as unknown);
   }
 
   /** Pure parse step, exposed for fixture tests. Throws on shape/hour drift. */
@@ -154,6 +201,44 @@ export class FinnhubEarningsSource {
       return { symbol: release.symbol, scheduledAt, meta };
     });
   }
+}
+
+// ------------------------------------------------------- day-range helpers --
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function isoToUtcMs(day: string): number {
+  return Date.parse(`${day}T00:00:00.000Z`);
+}
+
+function msToIsoDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** Inclusive [from..to] split into consecutive inclusive chunks of ≤ chunkDays. */
+function dayChunks(from: string, to: string, chunkDays: number): EarningsDateRange[] {
+  const fromMs = isoToUtcMs(from);
+  const toMs = isoToUtcMs(to);
+  if (Number.isNaN(fromMs) || Number.isNaN(toMs) || fromMs > toMs) {
+    throw new Error(`Finnhub earnings range is not a valid day interval: ${from}..${to}`);
+  }
+  const chunks: EarningsDateRange[] = [];
+  for (let startMs = fromMs; startMs <= toMs; startMs += chunkDays * DAY_MS) {
+    const endMs = Math.min(startMs + (chunkDays - 1) * DAY_MS, toMs);
+    chunks.push({ from: msToIsoDay(startMs), to: msToIsoDay(endMs) });
+  }
+  return chunks;
+}
+
+/** Halve a multi-day inclusive range; caller guarantees from < to. */
+function splitRange(range: EarningsDateRange): [EarningsDateRange, EarningsDateRange] {
+  const fromMs = isoToUtcMs(range.from);
+  const toMs = isoToUtcMs(range.to);
+  const midMs = fromMs + Math.floor((toMs - fromMs) / DAY_MS / 2) * DAY_MS;
+  return [
+    { from: range.from, to: msToIsoDay(midMs) },
+    { from: msToIsoDay(midMs + DAY_MS), to: range.to },
+  ];
 }
 
 /** Factory reading env (FINNHUB_API_KEY, FINNHUB_BASE_URL). Throws without the key. */

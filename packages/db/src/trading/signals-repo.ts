@@ -3,6 +3,7 @@ import { and, asc, eq, isNotNull, isNull } from 'drizzle-orm';
 
 import type { Db } from '../client.js';
 import { decisions, instruments, llmSignals, newsClusters } from '../schema.js';
+import type { LlmTransport } from '../shared-constants.js';
 
 /**
  * llm_signals persistence + the decide() driver's work queue.
@@ -41,6 +42,20 @@ export interface PersistSignalInput {
   costUsd?: number | null;
   latencyMs?: number | null;
   clusterItemCountAtAnalysis?: number | null;
+  /**
+   * True when interpreting pre-cutoff news (deliberate backfill). Defaults
+   * false. Retrospective rows never enter the live decide queue and are
+   * quarantined from reliability stats — see the schema comment.
+   */
+  retrospective?: boolean;
+  /**
+   * Which client produced the row. Defaults 'api'. 'cli' marks a dev-only
+   * subscription call that could not honour the prompt version's effort or
+   * max_tokens — see LlmTransport (shared-constants.ts).
+   */
+  transport?: LlmTransport;
+  /** The LLM's ≤2-sentence rationale (nullable — absent on seeded/test rows). */
+  reasoning?: string | null;
   analyzedAt: Date;
 }
 
@@ -55,15 +70,22 @@ export interface PersistSignalResult {
  * `${cluster_id}:${instrument_id ?? sector_code ?? 'macro'}:${prompt_version}:${model_id}`.
  * Re-prompting under a new prompt_version inserts NEW rows — old signals are
  * never touched (prompt A/B compares via join).
+ *
+ * transport='cli' appends ':cli'. Two reasons it is in the KEY and not only in
+ * a column: a dev-only subscription call must not occupy the slot that the real
+ * API call will later want (it would come back as a duplicate and never be
+ * interpreted properly), and API keys stay byte-identical to every row written
+ * before the transport existed.
  */
 export function buildSignalKey(
   input: Pick<
     PersistSignalInput,
-    'clusterId' | 'instrumentId' | 'sectorCode' | 'promptVersion' | 'modelId'
+    'clusterId' | 'instrumentId' | 'sectorCode' | 'promptVersion' | 'modelId' | 'transport'
   >,
 ): string {
   const target = input.instrumentId ?? input.sectorCode ?? 'macro';
-  return `${input.clusterId}:${target}:${input.promptVersion}:${input.modelId}`;
+  const suffix = input.transport === 'cli' ? ':cli' : '';
+  return `${input.clusterId}:${target}:${input.promptVersion}:${input.modelId}${suffix}`;
 }
 
 export async function persistSignal(
@@ -96,6 +118,9 @@ export async function persistSignal(
       costUsd: input.costUsd ?? null,
       latencyMs: input.latencyMs ?? null,
       clusterItemCountAtAnalysis: input.clusterItemCountAtAnalysis ?? null,
+      retrospective: input.retrospective ?? false,
+      transport: input.transport ?? 'api',
+      reasoning: input.reasoning ?? null,
       analyzedAt: input.analyzedAt,
     })
     .onConflictDoNothing({ target: llmSignals.signalKey })
@@ -153,6 +178,11 @@ export interface LoadUndecidedSignalsOptions {
  * analyzed_at asc, id asc; a plain batch loop drains the set because every
  * decided signal leaves it — no cursor needed (unlike the resolver, nothing
  * here is permanently unresolvable: even a missing quote records a decision).
+ *
+ * Retrospective signals are EXCLUDED here, not merely gated downstream: a
+ * backfilled interpretation of month-old news must never produce a live
+ * decision row at all (the stale_move gate would usually skip it anyway, but
+ * "usually" is not an invariant — this filter is).
  */
 export async function loadUndecidedSignals(
   db: Db,
@@ -191,6 +221,7 @@ export async function loadUndecidedSignals(
       and(
         eq(llmSignals.scope, 'company'),
         isNotNull(llmSignals.instrumentId),
+        eq(llmSignals.retrospective, false),
         isNull(decisions.id),
       ),
     )

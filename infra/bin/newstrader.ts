@@ -86,12 +86,16 @@ new AnalyticsStack(app, 'NewstraderAnalytics', {
   alarmTopic: ops.alarmTopic,
 });
 
-// M4/M5 trading pipeline: decide-sweep -> q-orders -> execute + the position
-// manager. VENUE IS SIM ONLY (paper) — see the stack header. Depends on the
-// ops stack for the alarm topic and the kill-switch SSM parameter it reads.
+// M2+M4/M5 pipeline: interpret-sweep -> llm_signals -> decide-sweep ->
+// q-orders -> execute + the position manager. VENUE IS SIM ONLY (paper) — see
+// the stack header. Depends on the ops stack for the alarm topic and the
+// kill-switch SSM parameter it reads; the LLM audit trail lands in the data
+// stack's LlmAuditBucket and item payloads are read back from the raw bucket.
 new TradingStack(app, 'NewstraderTrading', {
   env,
   dbSecret: data.dbSecret,
   databaseName: data.databaseName,
   alarmTopic: ops.alarmTopic,
+  llmAuditBucket: data.llmAuditBucket,
+  rawBucket: data.rawBucket,
 });

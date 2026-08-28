@@ -299,6 +299,30 @@ describe('reactionLadder', () => {
     ]);
   });
 
+  it('beta-adjusts a fallen-forward horizon by sampling the bench at the SAME bar', () => {
+    const fridayClose = at('2024-03-08T20:00:00.000Z');
+    // Instrument: +200 bps from Friday's close to Monday's open.
+    const bars = [
+      bar(minutesAfter(fridayClose, -1), '100.000000'),
+      bar(at('2024-03-11T14:30:00.000Z'), '102.000000'),
+    ];
+    // Benchmark trades on exactly the same two bars, +100 bps.
+    const bench = [
+      bar(minutesAfter(fridayClose, -1), '400.000000'),
+      bar(at('2024-03-11T14:30:00.000Z'), '404.000000'),
+    ];
+    const rows = reactionLadder(fridayClose, bars, bench, 1, ['1d']);
+    // The old code resolved the bench at the NOMINAL horizon (Saturday), where
+    // the only settled bar is the bench anchor itself — the guard then failed,
+    // beta was dropped, and abnormal silently carried the whole weekend gap
+    // (200 bps). Resolving the bench at the bar the instrument was priced on
+    // gives abnormal = 200 - 1*100 = 100 bps with beta recorded.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.betaUsed).toBe(1);
+    expect(Math.round(rows[0]?.rawReturnBps ?? 0)).toBe(200);
+    expect(Math.round(rows[0]?.abnormalReturnBps ?? 0)).toBe(100);
+  });
+
   it('"queue for open" still skips when the series ends exactly at the anchor bar (no proof of a settled gap)', () => {
     const fridayClose = at('2024-03-08T20:00:00.000Z');
     const bars = [

@@ -1,0 +1,39 @@
+{
+  "id": "bc18669b734a5d4376d71822d763d8891b31abcf68f28844b108b0667b4a876b",
+  "title": "Prediction: Trump's New Tariffs Won't Stand Up in Court. Consider Buying These 2 International ETFs.",
+  "description": "Trump's new tariffs on 60 countries face legal challenges from 25 states and are expected to be struck down by courts, similar to previous tariff rulings. Despite tariff concerns, the S&P 500 has risen 5% since the announcement. The article recommends two international ETFs for investors seeking global diversification: the Vanguard FTSE All-World ex-US ETF and the Vanguard Total World Stock ETF, with the latter being the author's preferred choice due to its broader diversification across 10,000+ stocks.",
+  "author": "Ben Gran",
+  "article_url": "https://www.fool.com/investing/2026/08/09/prediction-trumps-new-tariffs-wont-stand-up-in-cou/?source=iedfolrf0000001",
+  "published_utc": "2026-08-10T02:30:00Z",
+  "tickers": [
+    "VEU",
+    "VT"
+  ],
+  "keywords": [
+    "Trump tariffs",
+    "international ETFs",
+    "global diversification",
+    "legal challenge",
+    "stock market",
+    "trade policy"
+  ],
+  "insights": [
+    {
+      "ticker": "VEU",
+      "sentiment": "positive",
+      "sentiment_reasoning": "Recommended as a diversified international investment option with 3,858 stocks and strong recent performance (28.5% total return in past year, 17.3% annualized over 3 years), though long-term returns lag the S&P 500."
+    },
+    {
+      "ticker": "VT",
+      "sentiment": "positive",
+      "sentiment_reasoning": "Strongly recommended by the author as the preferred choice, offering broad diversification with 10,000+ stocks (62% U.S., 38% international), low expense ratio (0.06%), and solid recent performance (22.3% total return in past year, 18% annualized over 3 years)."
+    }
+  ],
+  "publisher": {
+    "name": "The Motley Fool",
+    "homepage_url": "https://www.fool.com/",
+    "logo_url": "https://s3.polygon.io/public/assets/news/logos/themotleyfool.svg",
+    "favicon_url": "https://s3.polygon.io/public/assets/news/favicons/themotleyfool.ico"
+  },
+  "image_url": "https://g.foolcdn.com/image/?url=https%3A%2F%2Fg.foolcdn.com%2Feditorial%2Fimages%2F881940%2Fgettyimages-2205487321.jpg&w=1200&op=resize"
+}

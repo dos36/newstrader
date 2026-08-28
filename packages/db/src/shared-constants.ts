@@ -20,3 +20,20 @@
  * both, making crypto structurally unmeasurable end to end.
  */
 export const MIN_LINK_CONFIDENCE = 0.75;
+
+/**
+ * Which transport produced an llm_signals row.
+ *
+ * 'api'  — Anthropic SDK + API key: honours the registered prompt contract
+ *          (effort, max_tokens, structured output) and is replayable.
+ * 'cli'  — the Claude Code CLI on the operator's subscription: DEV-ONLY. It
+ *          cannot set effort or max_tokens, appends our system prompt to a
+ *          harness prompt we neither own nor version, and carries ~25.7k tokens
+ *          of that harness on every call. Rows are therefore NOT comparable to
+ *          'api' rows and must be excluded from calibration and golden evals.
+ *
+ * Lives here because both llm/ (the clients and the work queue) and trading/
+ * (signals-repo, which writes the column and builds the signal key) need it,
+ * and trading/ must never import llm/.
+ */
+export type LlmTransport = 'api' | 'cli';

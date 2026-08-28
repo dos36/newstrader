@@ -110,6 +110,50 @@ export const DecideFeatures = z.object({
 });
 export type DecideFeatures = z.infer<typeof DecideFeatures>;
 
+/**
+ * WORLD vs PORTFOLIO feature tagging — the Mode-B replay contract (roadmap
+ * §4.1). World features describe the market and the news; they were true at
+ * decision time no matter which rules version was running, so a counterfactual
+ * replay REUSES them from the live snapshot. Portfolio features describe OUR
+ * book, which a different rules version would have built differently, so a
+ * counterfactual replay must RECOMPUTE them from its own simulated fills.
+ *
+ * engineVersion is in neither set: it is a build stamp, kept from the base
+ * snapshot by withPortfolioFeatures. The partition test in contracts.test.ts
+ * fails compilation/tests when a new DecideFeatures key is added without
+ * deciding which set it belongs to — that decision is exactly what keeps
+ * Mode B sound.
+ */
+export const WORLD_FEATURE_KEYS = [
+  'clusterItemCount',
+  'distinctSourceCount',
+  'itemsPerHour',
+  'calendarMatch',
+  'priceMoveSinceAnchorBps',
+  'medianDollarVolume',
+  'atr',
+] as const;
+
+export const PORTFOLIO_FEATURE_KEYS = [
+  'openPositionsCount',
+  'hasOpenPositionForInstrument',
+  'paperEquityUsd',
+] as const;
+
+export type PortfolioFeatures = Pick<DecideFeatures, (typeof PORTFOLIO_FEATURE_KEYS)[number]>;
+
+/**
+ * Overlay a recomputed portfolio state onto a stored feature snapshot,
+ * keeping every world feature (and the engineVersion stamp) as snapshotted.
+ * Parsed on the way out so the result round-trips through replay unchanged.
+ */
+export function withPortfolioFeatures(
+  base: DecideFeatures,
+  portfolio: PortfolioFeatures,
+): DecideFeatures {
+  return DecideFeatures.parse({ ...base, ...portfolio });
+}
+
 /** Price context at decision time (decisions.quote_snapshot). */
 export const QuoteSnapshot = z.object({
   /** Last known price (decimal string). */

@@ -35,6 +35,15 @@ import type { ScheduledEventKind, ScheduledEventLite } from './match.js';
  * upserted. The macro pages list years of history; the calendar table is a
  * forward-looking feature input, not an archive (raw pages are re-fetchable).
  *
+ * The one deliberate exception is backfill mode (backfillFromDay): it widens
+ * the window into the past to recover "was this scheduled?" ground truth for
+ * analytics over an already-collected news window. Every row older than the
+ * normal 1-day grace is stamped meta.backfilled=true — those rows were NOT in
+ * the table at decide time, so M5 analytics must never read them as knowledge
+ * the live path had. Finnhub's free tier serves only ~30 days of earnings
+ * history (verified live 2026-08-09: day 31 returns zero), so the log reports
+ * earningsServedFrom against what was requested.
+ *
  * Earnings symbols map to instruments through the CURRENT S&P 500 membership
  * (open index_membership rows); non-members are counted and skipped. This is
  * deliberately as-of-now, not point-in-time: the calendar describes the
@@ -72,6 +81,12 @@ export interface SyncCalendarCounts {
 
 export interface SyncCalendarOptions {
   horizonDays?: number;
+  /**
+   * ISO day (UTC, YYYY-MM-DD), at or before today. Widens the upsert window
+   * back to this day and fetches earnings from it — see the module docstring's
+   * backfill-mode paragraph for the provenance rules (meta.backfilled).
+   */
+  backfillFromDay?: string;
 }
 
 export async function syncCalendar(
@@ -81,10 +96,18 @@ export async function syncCalendar(
 ): Promise<SyncCalendarCounts> {
   const horizonDays = options?.horizonDays ?? DEFAULT_HORIZON_DAYS;
   const now = (deps.now ?? (() => new Date()))();
-  const windowFrom = new Date(now.getTime() - PAST_GRACE_MS);
+  const graceFrom = new Date(now.getTime() - PAST_GRACE_MS);
+  const backfillFrom = parseBackfillFrom(options?.backfillFromDay, now);
+  const windowFrom =
+    backfillFrom !== null && backfillFrom.getTime() < graceFrom.getTime()
+      ? backfillFrom
+      : graceFrom;
   const windowTo = new Date(now.getTime() + horizonDays * DAY_MS);
 
-  const earningsRange: EarningsDateRange = { from: isoDay(now), to: isoDay(windowTo) };
+  const earningsRange: EarningsDateRange = {
+    from: isoDay(backfillFrom ?? now),
+    to: isoDay(windowTo),
+  };
   if (deps.fetchEarnings === null) {
     console.warn(
       JSON.stringify({
@@ -117,6 +140,7 @@ export async function syncCalendar(
   type CandidateRow = typeof scheduledEvents.$inferInsert;
   const candidates = new Map<string, CandidateRow>(); // keyed by event_key (intra-batch dedup)
   let duplicates = 0;
+  let backfilledCandidates = 0;
 
   const addCandidate = (row: CandidateRow): void => {
     if (row.scheduledAt < windowFrom || row.scheduledAt > windowTo) {
@@ -125,6 +149,13 @@ export async function syncCalendar(
     }
     if (candidates.has(row.eventKey)) {
       duplicates += 1;
+      return;
+    }
+    if (row.scheduledAt < graceFrom) {
+      // Reachable only in backfill mode (windowFrom < graceFrom): recorded
+      // after the fact, so flagged — never pre-event knowledge (docstring).
+      backfilledCandidates += 1;
+      candidates.set(row.eventKey, { ...row, meta: { ...row.meta, backfilled: true } });
       return;
     }
     candidates.set(row.eventKey, row);
@@ -181,6 +212,21 @@ export async function syncCalendar(
     outsideWindow,
     earningsSymbolsSkipped,
   };
+  // Backfill observability: Finnhub's free tier silently serves nothing past
+  // ~30 days back, so a requested-vs-served gap must be loud, not invisible.
+  let earliestEarningsDay: string | null = null;
+  for (const entry of earnings) {
+    const day = isoDay(entry.scheduledAt);
+    if (earliestEarningsDay === null || day < earliestEarningsDay) earliestEarningsDay = day;
+  }
+  const backfillLog =
+    backfillFrom === null
+      ? {}
+      : {
+          backfillFrom: isoDay(backfillFrom),
+          backfilledCandidates,
+          earningsServedFrom: earliestEarningsDay,
+        };
   console.log(
     JSON.stringify({
       level: 'info',
@@ -188,6 +234,7 @@ export async function syncCalendar(
       horizonDays,
       windowFrom: windowFrom.toISOString(),
       windowTo: windowTo.toISOString(),
+      ...backfillLog,
       ...counts,
     }),
   );
@@ -274,6 +321,21 @@ function macroEventKey(kind: MacroEventKind, scheduledAt: Date): string {
 
 function earningsEventKey(symbol: string, scheduledAt: Date): string {
   return `earnings:${normalizeSymbol(symbol)}:${scheduledAt.toISOString()}`;
+}
+
+const ISO_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Backfill start: ISO day → UTC midnight. Rejects malformed and future days. */
+function parseBackfillFrom(day: string | undefined, now: Date): Date | null {
+  if (day === undefined) return null;
+  if (!ISO_DAY_RE.test(day)) {
+    throw new Error(`backfillFromDay must be YYYY-MM-DD, got "${day}"`);
+  }
+  const at = new Date(`${day}T00:00:00.000Z`);
+  if (Number.isNaN(at.getTime()) || at.getTime() > now.getTime()) {
+    throw new Error(`backfillFromDay must be a real day at or before today, got "${day}"`);
+  }
+  return at;
 }
 
 /**

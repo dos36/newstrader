@@ -117,6 +117,13 @@ export class IngestStack extends Stack {
         architecture: lambda.Architecture.ARM_64,
         memorySize: 256,
         timeout: pollTimeout,
+        // Lockstep with the scheduler target's retryAttempts: 0 (see the rule
+        // stated in analytics-stack.ts). Without it, a retried stale invoke
+        // runs concurrently with the next tick and double-fetches EDGAR, whose
+        // adapter relies on SEQUENTIAL polling to stay under the fair-access
+        // rate. reservedConcurrentExecutions pins that to one in-flight poll.
+        retryAttempts: 0,
+        reservedConcurrentExecutions: 1,
         bundling,
         environment: {
           ...commonEnv,
@@ -197,7 +204,7 @@ export class IngestStack extends Stack {
         removalPolicy: RemovalPolicy.DESTROY,
       }),
       description:
-        'newstrader process: q-items pointer -> dedup/cluster + entity resolution; LLM interpret arrives with M2',
+        'newstrader process: q-items pointer -> dedup/cluster + entity resolution; the M2 interpret-sweep picks clusters up by query',
     });
     props.rawBucket.grantRead(this.processFunction);
     props.dbSecret.grantRead(this.processFunction);

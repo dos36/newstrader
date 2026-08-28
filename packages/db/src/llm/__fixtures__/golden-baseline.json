@@ -1,0 +1,3 @@
+{
+  "_note": "Per-prompt-version accuracy floors for golden-eval.test.ts. Record an entry only after a REVIEWED golden run: {\"v1\": {\"event_type\": 0.86, \"direction\": 0.9, \"already_expected\": 0.9}}. The eval fails when a later run drops more than the tolerance below these. No entry = the eval reports accuracies without gating (bootstrap mode)."
+}

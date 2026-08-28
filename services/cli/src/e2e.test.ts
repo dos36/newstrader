@@ -586,10 +586,13 @@ describe.skipIf(!testDatabaseUrl)('trading e2e: signal → decide → fill → t
     }
 
     await db.insert(priceBars1m).values([
-      // Settled anchor bar — the stale-move reference price.
+      // Settled anchor bar — the stale-move reference price. Its OPEN is one
+      // minute BEFORE the anchor so that its close prints exactly at the
+      // anchor: a bar opening at the anchor closes 60s after the news and is
+      // not a pre-news price (see loadSettledCloseAt).
       {
         instrumentId,
-        ts: ANCHOR,
+        ts: new Date(ANCHOR.getTime() - 60_000),
         open: '100',
         high: '100',
         low: '100',

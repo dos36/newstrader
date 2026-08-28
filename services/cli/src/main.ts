@@ -1,7 +1,9 @@
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { allAdapters, FsRawStore } from '@newstrader/adapters';
 import {
+  CURRENT_PROMPT_VERSION,
   DEFAULT_RULES_LABEL,
   decide,
   formatDec,
@@ -12,13 +14,17 @@ import {
 } from '@newstrader/core';
 import type { RawStore, SourceAdapter } from '@newstrader/core';
 import {
+  anthropicLlmClient,
   backfillEventWindows,
+  runBacktest,
+  claudeCliLlmClient,
   closeStaleClusters,
   compareRuns,
   createDb,
   createReplayRun,
   decideSignals,
   defaultCalendarDeps,
+  documentSweep,
   derivePortfolio,
   ensureBenchmarks,
   ensureDailyBars,
@@ -31,8 +37,10 @@ import {
   fetchSp500FromWikipedia,
   getReplayRunRulesLabel,
   getRulesVersion,
+  interpretSweep,
   LIVE_RUN,
   loadResolverDictionary,
+  MEASURER_VERSION,
   measureReactions,
   recordSnapshot,
   resolveUnlinkedItems,
@@ -45,6 +53,8 @@ import type {
   Db,
   DecideSignalsTotals,
   EnsureDailyBarsDeps,
+  LlmClient,
+  LlmTransport,
   MassiveBarsOptions,
   RecordSnapshotDeps,
   ResolveCursor,
@@ -65,6 +75,15 @@ import {
   resolveEngineVersion,
   simBrokerFromEnv,
 } from '../../handlers/src/lib/trading.js';
+import { DEFAULT_LATENCY_OPTIONS, printLatencyPricing } from './eval-latency.js';
+import {
+  EVAL_HORIZONS,
+  printEvalSignals,
+  SESSION_BUCKETS,
+  type EvalHorizon,
+  type SessionBucket,
+} from './eval-signals.js';
+import { collectWeeklyData, renderWeeklyReport } from './report-weekly.js';
 import { printStats } from './stats.js';
 
 /**
@@ -97,8 +116,8 @@ const program = new Command();
 program
   .name('newstrader')
   .description(
-    'NewsTrader: ingest -> cluster -> resolve -> measure -> decide -> paper-trade (venue SIM only). ' +
-      'Zero LLM spend until M2 populates llm_signals.',
+    'NewsTrader: ingest -> cluster -> resolve -> interpret (M2, claude-sonnet-5) -> decide -> ' +
+      'paper-trade (venue SIM only). LLM spend is capped per UTC day and kill-switch-guarded.',
   );
 
 program
@@ -382,15 +401,23 @@ program
 program
   .command('calendar:sync')
   .option('--horizon-days <n>', 'forward window for scheduled events', '90')
+  .option(
+    '--backfill-from <yyyy-mm-dd>',
+    'also upsert past events from this UTC day, stamped meta.backfilled=true ' +
+      '(analytics ground truth only; Finnhub free tier serves ~30 days back)',
+  )
   .description(
     'Sync scheduled_events from the macro calendars (FOMC/CPI/NFP/GDP/PCE) and — when ' +
       'FINNHUB_API_KEY is set — the Finnhub earnings calendar for current S&P 500 members. ' +
       'Feeds the deterministic already_expected / calendar_match feature.',
   )
-  .action(async (options: { horizonDays: string }) => {
+  .action(async (options: { horizonDays: string; backfillFrom?: string }) => {
     const horizonDays = parsePositiveInt(options.horizonDays, '--horizon-days');
     await withDb(async (db) => {
-      const counts = await syncCalendar(db, defaultCalendarDeps(process.env), { horizonDays });
+      const counts = await syncCalendar(db, defaultCalendarDeps(process.env), {
+        horizonDays,
+        ...(options.backfillFrom !== undefined ? { backfillFromDay: options.backfillFrom } : {}),
+      });
       console.table([
         {
           ...counts.inserted,
@@ -438,6 +465,275 @@ program
       );
     });
   });
+
+program
+  .command('edgar:documents')
+  .option('--batch <n>', 'filings per pass', '100')
+  .option(
+    '--loop <seconds>',
+    'run as a standing service: repeat forever with this many seconds between passes, ' +
+      'idling when the queue is empty (new 8-Ks arrive all day)',
+  )
+  .option(
+    '--until-empty',
+    'with --loop, stop once the queue drains instead of idling — the backfill form',
+  )
+  .option(
+    '--form-types <list>',
+    "comma-separated meta.formType values to fetch (default '8-K,8-K/A')",
+  )
+  .option(
+    '--refetch',
+    're-fetch filings that already have stored text (use after the extractor improves); ' +
+      'blobs are keyed per item so a refetch overwrites in place',
+  )
+  .option(
+    '--refetch-stale',
+    'with --refetch, re-fetch ONLY filings stored by an older fetcher version that a ' +
+      'cap trimmed — the form to use after raising the caps. Converges: each filing is ' +
+      'revisited at most once per version bump',
+  )
+  .description(
+    'Fetch SEC filing bodies + press-release exhibits for EDGAR items and store them for ' +
+      'the interpreter. Without this an 8-K reaches the model as a form type and item codes ' +
+      'only — its stored Atom summary is filing metadata (median 57 chars). Re-run to ' +
+      'continue; oldest first, idempotent per item. --loop runs it as a standing service; ' +
+      'add --until-empty to drain and exit. Requires EDGAR_USER_AGENT.',
+  )
+  .action(
+    async (options: {
+      batch: string;
+      loop?: string;
+      formTypes?: string;
+      untilEmpty?: boolean;
+      refetch?: boolean;
+      refetchStale?: boolean;
+    }) => {
+      const batch = parsePositiveInt(options.batch, '--batch');
+      const loopSeconds =
+        options.loop === undefined ? undefined : parsePositiveInt(options.loop, '--loop');
+      const untilEmpty = options.untilEmpty === true;
+      if (untilEmpty && loopSeconds === undefined) {
+        throw new Error('edgar:documents: --until-empty only means something with --loop');
+      }
+      const refetch = options.refetch === true || options.refetchStale === true;
+      if (options.refetchStale === true && options.refetch !== true) {
+        console.log('[edgar:documents] --refetch-stale implies --refetch');
+      }
+      const userAgent = process.env['EDGAR_USER_AGENT']?.trim();
+      if (userAgent === undefined || userAgent === '') {
+        // SEC 403s requests without a contact string; fail loudly rather than
+        // burn the queue's attempts on a wall of 403s.
+        throw new Error(
+          'edgar:documents requires EDGAR_USER_AGENT ("Name email@example.com") — SEC ' +
+            'rejects requests without a contact string.',
+        );
+      }
+      const formTypes = options.formTypes
+        ?.split(',')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+
+      await withDb(async (db) => {
+        const store = new FsRawStore(
+          process.env['RAW_STORE_DIR'] ?? path.join(REPO_ROOT, 'data', 'raw'),
+        );
+        for (;;) {
+          const result = await documentSweep(
+            db,
+            { store, userAgent },
+            {
+              batch,
+              ...(formTypes !== undefined && formTypes.length > 0 ? { formTypes } : {}),
+              ...(refetch ? { refetch: true } : {}),
+              ...(options.refetchStale === true ? { refetchStaleOnly: true } : {}),
+            },
+          );
+          console.table([
+            {
+              examined: result.examined,
+              stored: result.stored,
+              'no documents': result.empty,
+              failed: result.failed,
+              truncated: result.truncated,
+              'chars stored': result.charsStored,
+              'left to fetch': result.remaining,
+            },
+          ]);
+          if (loopSeconds === undefined) return;
+          if (result.examined === 0) {
+            // --loop is a standing service (same contract as poll/process): new
+            // 8-Ks arrive all day, so an empty queue means "caught up", not
+            // "finished". Only --until-empty treats it as a stop condition.
+            if (untilEmpty) {
+              console.log('[edgar:documents] queue empty — done');
+              return;
+            }
+            console.log(
+              `[edgar:documents] caught up — next check in ${loopSeconds}s (ctrl-c to stop)`,
+            );
+          } else {
+            console.log(`[edgar:documents] sleeping ${loopSeconds}s (ctrl-c to stop)`);
+          }
+          await sleep(loopSeconds * 1000);
+        }
+      });
+    },
+  );
+
+program
+  .command('interpret')
+  .option('--batch <n>', 'cluster×instrument pairs per pass', '25')
+  .option('--loop <seconds>', 'repeat forever with this many seconds between passes')
+  .option('--lookback-hours <n>', 'live window over cluster first_received_at', '24')
+  .option(
+    '--retrospective-from <iso>',
+    'backfill window start — rows are stamped retrospective=true and NEVER reach the live decide queue',
+  )
+  .option('--retrospective-to <iso>', 'backfill window end (required with --retrospective-from)')
+  .option(
+    '--backfill',
+    'work the whole backlog oldest-first: a retrospective window covering every ' +
+      'cluster older than the live lookback. Re-run the SAME command to keep going — ' +
+      'each pass takes the next --batch pairs and written rows leave the queue. Done ' +
+      'when examined is 0.',
+  )
+  .option('--dry-run', 'assemble candidates and print the first prompt; no API calls, no writes')
+  .option(
+    '--mode <api|cli>',
+    "transport: 'api' = SDK + ANTHROPIC_API_KEY (the only production mode); " +
+      "'cli' = the Claude Code CLI on your subscription, DEV-ONLY. Defaults to " +
+      'LLM_TRANSPORT, else api.',
+  )
+  .description(
+    'M2: interpret novel clusters carrying an instrument link (confidence >= 0.75) into ' +
+      'llm_signals via claude-sonnet-5 structured output. One call per cluster×instrument pair; ' +
+      'idempotent on signal_key. Requires ANTHROPIC_API_KEY (except --dry-run and --mode cli). ' +
+      'Guarded by the kill switch and LLM_DAILY_SPEND_USD_CAP (default $5/UTC-day).',
+  )
+  .action(
+    async (options: {
+      batch: string;
+      loop?: string;
+      lookbackHours: string;
+      retrospectiveFrom?: string;
+      retrospectiveTo?: string;
+      dryRun?: boolean;
+      mode?: string;
+      backfill?: boolean;
+    }) => {
+      const batch = parsePositiveInt(options.batch, '--batch');
+      const lookbackHours = parsePositiveInt(options.lookbackHours, '--lookback-hours');
+      const loopSeconds =
+        options.loop === undefined ? undefined : parsePositiveInt(options.loop, '--loop');
+      const dryRun = options.dryRun === true;
+      const retrospective =
+        options.backfill === true
+          ? backfillWindow(options.retrospectiveFrom, options.retrospectiveTo, lookbackHours)
+          : parseRetrospectiveWindow(options.retrospectiveFrom, options.retrospectiveTo);
+      if (retrospective !== undefined && loopSeconds !== undefined) {
+        throw new Error('interpret: a retrospective backfill is one-shot — drop --loop');
+      }
+      const dailySpendCapUsd = parseSpendCapEnv();
+      const mode = parseTransportMode(options.mode ?? process.env['LLM_TRANSPORT']);
+      if (mode === 'cli' && !dryRun) {
+        // Loud on purpose: these rows cost ~25.7k harness tokens each, ignore
+        // the prompt version's effort/max_tokens, and are not replayable.
+        console.warn(
+          '[interpret] mode=cli — DEV ONLY. Rows are stamped transport=cli with a ' +
+            ':cli signal_key, and must be excluded from calibration and golden evals. ' +
+            'Use --mode api with ANTHROPIC_API_KEY for anything you intend to measure.',
+        );
+      }
+
+      // Dry runs must work before any key exists; the sweep never calls the
+      // client on that path, so a throwing stub keeps the contract honest. The
+      // stub still carries the resolved transport: it decides the signal key,
+      // and therefore which candidates a dry run reports.
+      const llm: LlmClient = dryRun
+        ? {
+            transport: mode,
+            interpret: (): never => {
+              throw new Error('dry-run must never reach the LLM');
+            },
+          }
+        : mode === 'cli'
+          ? claudeCliLlmClient(process.env)
+          : anthropicLlmClient(process.env);
+
+      await withDb(async (db) => {
+        // One FsRawStore serves both roles locally: payload refs are absolute
+        // paths written at ingest; audit blobs land under <root>/llm/....
+        const store = new FsRawStore(
+          process.env['RAW_STORE_DIR'] ?? path.join(REPO_ROOT, 'data', 'raw'),
+        );
+        for (;;) {
+          try {
+            const killSwitch = await cliKillSwitch();
+            const result = await interpretSweep(
+              db,
+              {
+                llm,
+                auditStore: store,
+                payloadStore: store,
+                killSwitchHalted: killSwitch.halted,
+              },
+              {
+                batch,
+                lookbackHours,
+                dryRun,
+                // Only the operator-driven backfill pays for the extra COUNT.
+                countRemaining: options.backfill === true,
+                ...(retrospective !== undefined ? { retrospective } : {}),
+                ...(dailySpendCapUsd !== undefined ? { dailySpendCapUsd } : {}),
+              },
+            );
+            if (dryRun) {
+              console.log(
+                result.samplePrompt === null
+                  ? '[interpret] dry run: no candidates in the window'
+                  : `\n----- first user prompt -----\n${result.samplePrompt}\n-----------------------------`,
+              );
+            }
+            // remaining is null when the pass never reached the queue (kill
+            // switch halted) — say nothing rather than claim an empty backlog.
+            if (options.backfill === true && result.remaining !== null) {
+              console.log(
+                result.remaining === 0
+                  ? '[interpret] backlog empty — every pair older than the live window is done'
+                  : `[interpret] ${result.remaining} pairs left to process — re-run the same command to continue`,
+              );
+            }
+            console.table([
+              {
+                mode: result.transport,
+                examined: result.examined,
+                'left to process': result.remaining ?? '—',
+                interpreted: result.interpreted,
+                duplicates: result.duplicates,
+                failures: result.failures,
+                'spend cap hit': result.spendCapReached,
+                'spent today $': Number(result.spentTodayUsd.toFixed(4)),
+                'kill switch': result.halted ? 'HALTED' : 'run',
+                'transport error': result.transportError ?? '—',
+              },
+            ]);
+          } catch (error) {
+            if (loopSeconds === undefined) throw error;
+            // Same tolerance as `process --loop`: a failed pass is logged and
+            // the next tick retries — candidates are still candidates, and
+            // every write path is idempotent on signal_key.
+            console.error(
+              `[interpret] cycle FAILED: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          if (loopSeconds === undefined) return;
+          console.log(`[interpret] sleeping ${loopSeconds}s (ctrl-c to stop)`);
+          await sleep(loopSeconds * 1000);
+        }
+      });
+    },
+  );
 
 program
   .command('decide')
@@ -611,39 +907,222 @@ program
   });
 
 program
+  .command('backtest')
+  .requiredOption('--rules <label>', 'rules version label to trade under')
+  .option('--from <iso>', 'earliest cluster anchor to consider')
+  .option('--to <iso>', 'latest cluster anchor to consider')
+  .option('--prompt-versions <list>', 'comma-separated prompt versions (default: current)')
+  .option(
+    '--transports <list>',
+    "comma-separated transports (default 'api'; 'cli' rows did not honour their " +
+      "prompt version's effort or max_tokens)",
+  )
+  .option('--equity <usd>', 'starting paper cash', '100000.00')
+  .option(
+    '--pipeline-lag-minutes <n>',
+    'assumed minutes from news arrival to decision (interpret sweep + decide sweep). ' +
+      'Lower is more optimistic and less true',
+    '10',
+  )
+  .option('--slippage-bps <n>', 'override the sim fill slippage')
+  .option('--no-persist', 'report only; write no replay_runs or decisions rows')
+  .option('--trades', 'print the closed-trade log')
+  .description(
+    'Backtest the decision engine over historical signals that never had a live decision. ' +
+      'Reconstructs every decision input as of the moment the pipeline could have decided ' +
+      '(anchor + pipeline lag) — quote, velocity, ATR, liquidity, portfolio — runs the real ' +
+      'engine, simulates fills with the production fill model, and reports P&L. Read the ' +
+      'as-of contract and limitations in packages/db/src/backtest/backtest.ts before ' +
+      'trusting a number.',
+  )
+  .action(
+    async (options: {
+      rules: string;
+      from?: string;
+      to?: string;
+      promptVersions?: string;
+      transports?: string;
+      equity: string;
+      pipelineLagMinutes: string;
+      slippageBps?: string;
+      persist?: boolean;
+      trades?: boolean;
+    }) => {
+      const lagMinutes = parsePositiveInt(options.pipelineLagMinutes, '--pipeline-lag-minutes');
+      const promptVersions = splitList(options.promptVersions);
+      const transports = splitList(options.transports);
+      for (const transport of transports ?? []) {
+        if (transport !== 'api' && transport !== 'cli') {
+          throw new Error(
+            `backtest: --transports entries must be "api" or "cli", got "${transport}"`,
+          );
+        }
+      }
+      await withDb(async (db) => {
+        const result = await runBacktest(
+          db,
+          { decide, engineVersion: resolveEngineVersion() },
+          {
+            rulesLabel: options.rules,
+            ...(options.from !== undefined ? { from: parseIsoDate(options.from, '--from') } : {}),
+            ...(options.to !== undefined ? { to: parseIsoDate(options.to, '--to') } : {}),
+            ...(promptVersions !== undefined ? { promptVersions } : {}),
+            ...(transports !== undefined ? { transports: transports as Array<'api' | 'cli'> } : {}),
+            startingCashUsd: options.equity,
+            pipelineLagMs: lagMinutes * 60_000,
+            ...(options.persist === false ? { persist: false } : {}),
+            ...(options.slippageBps !== undefined
+              ? { slippageBps: parsePositiveInt(options.slippageBps, '--slippage-bps') }
+              : {}),
+          },
+        );
+        console.table([
+          {
+            rules: result.rulesLabel,
+            signals: result.examined,
+            opens: result.opens,
+            skips: result.skips,
+            trades: result.trades,
+            'win/loss': `${result.wins}/${result.losses}`,
+            'realized $': result.realizedUsd,
+            'fees $': result.feesUsd,
+            'ending equity $': result.endingEquityUsd,
+            'still open': result.stillOpen,
+          },
+        ]);
+        if (result.skipReasons.length > 0) {
+          console.log('\nwhere the funnel stops:');
+          console.table(result.skipReasons);
+        }
+        if (options.trades === true && result.closedTrades.length > 0) {
+          console.table(
+            result.closedTrades.map((trade) => ({
+              signal: trade.signalId.slice(-8),
+              side: trade.side,
+              qty: trade.qty,
+              entry: trade.entryPrice,
+              exit: trade.exitPrice,
+              'P&L $': trade.realizedUsd,
+              reason: trade.exitReason,
+              opened: trade.openedAt.toISOString(),
+              closed: trade.closedAt.toISOString(),
+            })),
+          );
+        }
+        if (result.examined === 0) {
+          console.log(
+            '\n[backtest] no signals matched. Interpret some first, and note the default ' +
+              "transport filter is 'api' — cli rows are excluded.",
+          );
+        }
+      });
+    },
+  );
+
+program
   .command('replay')
   .requiredOption('--rules <label>', 'rules version to replay under')
   .option('--from <iso>', 'signals window start (analyzed_at, inclusive)')
   .option('--to <iso>', 'signals window end (inclusive)')
   .option('--notes <text>', 'free-form note stored on the replay run')
+  .option(
+    '--mode <a|b>',
+    "'a' (default) re-executes from live snapshots verbatim — the bit-for-bit regression " +
+      "mode, only sound under the SAME rules label. 'b' simulates this run's OWN portfolio " +
+      '(world features reused, portfolio features recomputed from simulated fills) and ' +
+      'writes a replay_run_metrics row — the counterfactual mode for comparing labels.',
+    'a',
+  )
+  .option('--equity <usd>', 'mode b: starting paper cash', '100000.00')
+  .option('--slippage-bps <n>', 'mode b: override the sim fill slippage')
   .description(
     'Replay the stored signal log under a rules version, re-executing decide() from each ' +
-      "signal's snapshotted features/quote (never live queries). Replaying the LIVE rules " +
-      'version must reproduce live decisions bit-for-bit (Mode A).',
+      "signal's snapshotted features/quote (never live queries). Mode A: replaying the LIVE " +
+      'rules version must reproduce live decisions bit-for-bit. Mode B: counterfactual ' +
+      'portfolio simulation with per-run metrics (hit rate, profit factor, drawdown).',
   )
-  .action(async (options: { rules: string; from?: string; to?: string; notes?: string }) => {
-    await withDb(async (db) => {
-      const run = await createReplayRun(db, {
-        rulesLabel: options.rules,
-        from: options.from === undefined ? null : parseIsoDate(options.from, '--from'),
-        to: options.to === undefined ? null : parseIsoDate(options.to, '--to'),
-        notes: options.notes ?? null,
-      });
-      const totals = await runReplay(db, { decide }, { replayRunId: run.id });
-      console.log(`replay run: ${run.id}`);
-      console.table([totals]);
-      if (totals.modeBUnsoundPortfolioFeatures) {
-        console.log(
-          "WARNING: this run's rules label differs from the label that produced the live " +
-            'decisions it reused. Portfolio features (openPositionsCount / paperEquityUsd) were ' +
-            'copied from the LIVE run, not recomputed for this label — this replay is Mode B and ' +
-            'its results may not reflect what this rules version would actually have done. ' +
-            'See the mode_b_unsound_portfolio_features log line above for the labels involved.',
-        );
+  .action(
+    async (options: {
+      rules: string;
+      from?: string;
+      to?: string;
+      notes?: string;
+      mode: string;
+      equity: string;
+      slippageBps?: string;
+    }) => {
+      const mode = options.mode.trim().toLowerCase();
+      if (mode !== 'a' && mode !== 'b') {
+        throw new Error(`replay: --mode must be "a" or "b", got "${options.mode}"`);
       }
-      console.log(`compare with: pnpm cli replay:compare --a live --b ${run.id}`);
-    });
-  });
+      const slippageBps =
+        options.slippageBps === undefined
+          ? undefined
+          : parsePositiveInt(options.slippageBps, '--slippage-bps');
+      await withDb(async (db) => {
+        const run = await createReplayRun(db, {
+          rulesLabel: options.rules,
+          from: options.from === undefined ? null : parseIsoDate(options.from, '--from'),
+          to: options.to === undefined ? null : parseIsoDate(options.to, '--to'),
+          notes: options.notes ?? null,
+          params: {
+            mode,
+            ...(mode === 'b'
+              ? {
+                  startingCashUsd: options.equity,
+                  ...(slippageBps !== undefined ? { slippageBps } : {}),
+                }
+              : {}),
+          },
+        });
+        const totals = await runReplay(
+          db,
+          { decide },
+          {
+            replayRunId: run.id,
+            ...(mode === 'b'
+              ? {
+                  simulatePortfolio: {
+                    startingCashUsd: options.equity,
+                    ...(slippageBps !== undefined ? { slippageBps } : {}),
+                  },
+                }
+              : {}),
+          },
+        );
+        console.log(`replay run: ${run.id} (mode ${mode.toUpperCase()})`);
+        const { simulated, ...counts } = totals;
+        console.table([counts]);
+        if (simulated !== null) {
+          console.log('-- simulated portfolio (replay_run_metrics row written) --');
+          console.table([
+            {
+              trades: simulated.metrics.trades,
+              'win/loss': `${simulated.metrics.wins}/${simulated.metrics.losses}`,
+              'hit rate': simulated.metrics.hitRate?.toFixed(3) ?? '—',
+              'avg bps/trade': simulated.metrics.avgBpsPerTrade?.toFixed(1) ?? '—',
+              'profit factor': simulated.metrics.profitFactor?.toFixed(2) ?? '∞/—',
+              'max DD %': simulated.metrics.maxDrawdownPct?.toFixed(2) ?? '—',
+              'exp-adj ret %': simulated.metrics.exposureAdjustedReturnPct?.toFixed(2) ?? '—',
+              'realized $': simulated.metrics.realizedUsd,
+              'fees $': simulated.feesUsd,
+              'ending equity $': simulated.endingEquityUsd,
+              'still open': simulated.stillOpen,
+            },
+          ]);
+        }
+        if (totals.modeBUnsoundPortfolioFeatures) {
+          console.log(
+            "WARNING: this run's rules label differs from the label that produced the live " +
+              'decisions it reused, and the portfolio was NOT simulated: portfolio features ' +
+              '(openPositionsCount / paperEquityUsd) were copied from the LIVE run. Re-run ' +
+              'with --mode b for a sound cross-label comparison.',
+          );
+        }
+        console.log(`compare with: pnpm cli replay:compare --a live --b ${run.id}`);
+      });
+    },
+  );
 
 program
   .command('replay:compare')
@@ -702,6 +1181,160 @@ program
       }
     });
   });
+
+program
+  .command('eval:signals')
+  .option(
+    '--versions <list>',
+    `comma-separated prompt versions (default: current, ${CURRENT_PROMPT_VERSION}); with 2+ ` +
+      'versions, rows are restricted to the intersection of answered pairs and a paired ' +
+      'direction-flip/confidence-delta comparison is printed',
+  )
+  .option(
+    '--transports <list>',
+    "comma-separated transports (default 'api'; 'cli' rows ignored their prompt contract)",
+  )
+  .option('--measurer <version>', 'reaction_measurements measurer_version', MEASURER_VERSION)
+  .option(
+    '--include-retrospective',
+    'include backfilled (retrospective=true) signals — only sound for prompt versions that ' +
+      'reconstruct their inputs at the observation lag (v2+)',
+  )
+  .option('--from <iso>', 'cluster anchor window start')
+  .option('--to <iso>', 'cluster anchor window end')
+  .option(
+    '--split <iso>',
+    'tune/holdout split over cluster first_received_at: default reports the TUNE side (< split)',
+  )
+  .option('--holdout', 'with --split: report the holdout side (>= split) instead')
+  .option('--session <bucket>', `filter every table to one session: ${SESSION_BUCKETS.join('|')}`)
+  .option('--event-types <list>', 'comma-separated event types to include')
+  .option(
+    '--cost-bps <n>',
+    'assumed round-trip cost for the whitelist-bridge verdict (spread + slippage + fees)',
+    '20',
+  )
+  .option('--horizons <list>', 'whitelist-bridge horizons (comma-separated)', '30m,1h,1d,3d,5d')
+  .description(
+    'M5 calibration & quality report: confidence deciles vs directional hit rate (Wilson CIs, ' +
+      'ECE), materiality/expected-move rank correlations, per-event-type hit rates, neutral ' +
+      'scoring, reaction speed + capture ratios, NY-session cuts, the event-study → whitelist ' +
+      'bridge, the already_expected × calendar_match cross-table, and the next-open reaction ' +
+      'for off-hours anchors. Joins llm_signals × reaction_measurements (default measurer ' +
+      `'${MEASURER_VERSION}'); needs \`interpret\` and \`measure\` to have run.`,
+  )
+  .action(
+    async (options: {
+      versions?: string;
+      transports?: string;
+      measurer: string;
+      includeRetrospective?: boolean;
+      from?: string;
+      to?: string;
+      split?: string;
+      holdout?: boolean;
+      session?: string;
+      eventTypes?: string;
+      costBps: string;
+      horizons: string;
+    }) => {
+      if (options.holdout === true && options.split === undefined) {
+        throw new Error('eval:signals: --holdout only means something with --split');
+      }
+      const session = parseSession(options.session);
+      const horizons = (splitList(options.horizons) ?? []).map(parseEvalHorizon);
+      const eventTypes = splitList(options.eventTypes);
+      await withDb(async (db) => {
+        await printEvalSignals(db, {
+          versions: splitList(options.versions) ?? [CURRENT_PROMPT_VERSION],
+          transports: splitList(options.transports) ?? ['api'],
+          measurer: options.measurer,
+          includeRetrospective: options.includeRetrospective === true,
+          holdout: options.holdout === true,
+          costBps: parsePositiveInt(options.costBps, '--cost-bps'),
+          bridgeHorizons: horizons,
+          ...(options.from !== undefined ? { from: parseIsoDate(options.from, '--from') } : {}),
+          ...(options.to !== undefined ? { to: parseIsoDate(options.to, '--to') } : {}),
+          ...(options.split !== undefined ? { split: parseIsoDate(options.split, '--split') } : {}),
+          ...(session !== undefined ? { session } : {}),
+          ...(eventTypes !== undefined ? { eventTypes } : {}),
+        });
+      });
+    },
+  );
+
+program
+  .command('eval:latency')
+  .option('--measurer <version>', 'received-clock measurer version', MEASURER_VERSION)
+  .option(
+    '--source-horizon <h>',
+    'horizon for the per-source cut',
+    DEFAULT_LATENCY_OPTIONS.sourceHorizon,
+  )
+  .option('--from <iso>', 'anchor window start')
+  .option('--to <iso>', 'anchor window end')
+  .description(
+    'Ingestion-latency pricing (roadmap §4.7): per-pair delta between the publication-anchored ' +
+      `('${MEASURER_VERSION}-pub') and received-anchored ('${MEASURER_VERSION}') abnormal-return ` +
+      'curves, per horizon and per first source — the measured bps cost of our ingest latency, ' +
+      'and the evidence for/against the Benzinga add-on.',
+  )
+  .action(
+    async (options: { measurer: string; sourceHorizon: string; from?: string; to?: string }) => {
+      await withDb(async (db) => {
+        await printLatencyPricing(db, {
+          measurer: options.measurer,
+          pubMeasurer: `${options.measurer}-pub`,
+          sourceHorizon: options.sourceHorizon,
+          ...(options.from !== undefined ? { from: parseIsoDate(options.from, '--from') } : {}),
+          ...(options.to !== undefined ? { to: parseIsoDate(options.to, '--to') } : {}),
+        });
+      });
+    },
+  );
+
+program
+  .command('report:weekly')
+  .option('--to <iso>', 'window end (default: now)')
+  .option('--days <n>', 'window length in days', '7')
+  .option(
+    '--versions <list>',
+    `prompt versions for the analytics joins (default ${CURRENT_PROMPT_VERSION})`,
+  )
+  .option('--measurer <version>', 'reaction measurer version', MEASURER_VERSION)
+  .option('--out <file>', 'also write the markdown to this file')
+  .description(
+    'M5 weekly markdown report: paper P&L, decision funnel with rejected-signal counts by ' +
+      'gate, hit rate by event type, the calibration table, and best/worst closed trades ' +
+      "with the LLM's reasoning. Prints to stdout; --out also writes a file.",
+  )
+  .action(
+    async (options: {
+      to?: string;
+      days: string;
+      versions?: string;
+      measurer: string;
+      out?: string;
+    }) => {
+      const to = options.to === undefined ? new Date() : parseIsoDate(options.to, '--to');
+      const from = new Date(to.getTime() - parsePositiveInt(options.days, '--days') * DAY_MS);
+      await withDb(async (db) => {
+        const data = await collectWeeklyData(db, {
+          from,
+          to,
+          measurer: options.measurer,
+          versions: splitList(options.versions) ?? [CURRENT_PROMPT_VERSION],
+          transports: ['api'],
+        });
+        const markdown = renderWeeklyReport(data);
+        console.log(markdown);
+        if (options.out !== undefined) {
+          await writeFile(options.out, markdown, 'utf8');
+          console.error(`[report:weekly] written to ${options.out}`);
+        }
+      });
+    },
+  );
 
 program
   .command('stats')
@@ -816,6 +1449,103 @@ function parseIsoDate(value: string, flag: string): Date {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
     throw new Error(`${flag} must be an ISO date/time, got "${value}"`);
+  }
+  return parsed;
+}
+
+/** Both retrospective bounds or neither; a backfill window is always explicit. */
+/**
+ * The whole-backlog window: everything from before records began up to the
+ * live lookback's lower edge.
+ *
+ * The upper bound is `now - lookbackHours`, NOT midnight or `now`. It has to
+ * tile exactly with the live sweep's window or one of two things goes wrong.
+ * Stop earlier and a band of clusters belongs to neither pass. Stop later and
+ * the backfill claims clusters the live sweep would have taken, stamping them
+ * retrospective=true — and since signal_key does not include that flag, those
+ * pairs could then never produce a live decision. Quarantining fresh news is
+ * the more expensive mistake, which is why the bound is the live edge.
+ *
+ * `from` is the epoch rather than a MIN(first_received_at) query: the window is
+ * only a lower bound on the candidate join, so the earliest cluster is found
+ * without asking, and the command stays deterministic.
+ */
+function backfillWindow(
+  fromRaw: string | undefined,
+  toRaw: string | undefined,
+  lookbackHours: number,
+): { from: Date; to: Date } {
+  if (fromRaw !== undefined || toRaw !== undefined) {
+    throw new Error(
+      'interpret: --backfill sets the window itself — drop --retrospective-from/--retrospective-to',
+    );
+  }
+  return { from: new Date(0), to: new Date(Date.now() - lookbackHours * 3_600_000) };
+}
+
+function parseRetrospectiveWindow(
+  fromRaw: string | undefined,
+  toRaw: string | undefined,
+): { from: Date; to: Date } | undefined {
+  if (fromRaw === undefined && toRaw === undefined) return undefined;
+  if (fromRaw === undefined || toRaw === undefined) {
+    throw new Error('interpret: --retrospective-from and --retrospective-to must be set together');
+  }
+  const from = parseIsoDate(fromRaw, '--retrospective-from');
+  const to = parseIsoDate(toRaw, '--retrospective-to');
+  if (from.getTime() > to.getTime()) {
+    throw new Error('interpret: --retrospective-from must be at or before --retrospective-to');
+  }
+  return { from, to };
+}
+
+/** LLM_DAILY_SPEND_USD_CAP override; undefined defers to the sweep's default ($5). */
+/**
+ * 'api' unless explicitly asked for 'cli'. Unrecognized values throw rather
+ * than defaulting: a typo must not silently pick a transport, in either
+ * direction (the same fail-closed reasoning as the kill switch parser).
+ */
+/** Comma-separated option → trimmed list, or undefined when absent/empty. */
+function splitList(raw: string | undefined): string[] | undefined {
+  if (raw === undefined) return undefined;
+  const entries = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return entries.length > 0 ? entries : undefined;
+}
+
+function parseSession(raw: string | undefined): SessionBucket | undefined {
+  if (raw === undefined) return undefined;
+  const value = raw.trim().toLowerCase();
+  const match = SESSION_BUCKETS.find((bucket) => bucket === value);
+  if (match === undefined) {
+    throw new Error(`--session must be one of ${SESSION_BUCKETS.join('|')}, got "${raw}"`);
+  }
+  return match;
+}
+
+function parseEvalHorizon(raw: string): EvalHorizon {
+  const match = EVAL_HORIZONS.find((horizon) => horizon === raw);
+  if (match === undefined) {
+    throw new Error(`--horizons entries must be one of ${EVAL_HORIZONS.join('|')}, got "${raw}"`);
+  }
+  return match;
+}
+
+function parseTransportMode(raw: string | undefined): LlmTransport {
+  const value = raw?.trim().toLowerCase();
+  if (value === undefined || value === '') return 'api';
+  if (value === 'api' || value === 'cli') return value;
+  throw new Error(`interpret: --mode must be "api" or "cli", got "${raw ?? ''}"`);
+}
+
+function parseSpendCapEnv(): number | undefined {
+  const raw = process.env['LLM_DAILY_SPEND_USD_CAP'];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`LLM_DAILY_SPEND_USD_CAP must be a positive number, got "${raw}"`);
   }
   return parsed;
 }

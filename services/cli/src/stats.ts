@@ -1,4 +1,4 @@
-import { MIN_LINK_CONFIDENCE, derivePortfolio } from '@newstrader/db';
+import { MEASURER_VERSION, MIN_LINK_CONFIDENCE, derivePortfolio } from '@newstrader/db';
 import type { Db } from '@newstrader/db';
 import { loadSimPortfolioFills, simBrokerFromEnv } from '../../handlers/src/lib/trading.js';
 
@@ -112,11 +112,17 @@ export async function printStats(db: Db): Promise<void> {
   // and grouping keeps the query list readable.
   const [reactionOverview, alphaDecay, unmeasured, calendar, ingestLatency] = await Promise.all([
     db.$client.query<ReactionOverviewRow>(
+      // Scoped to MEASURER_VERSION. The table is keyed on measurer_version and
+      // every pass writes BOTH the received-clock and the publication-clock
+      // view, so an unscoped count reported ~2x the real number of events and
+      // the median pooled two different anchor definitions.
       `select count(distinct (cluster_id, instrument_id))::int as measured_pairs,
               percentile_cont(0.5) within group (order by abs(abnormal_return_bps))
                 filter (where horizon = '1d') as median_abs_1d_abnormal_bps
          from reaction_measurements
-        where anchor_ts >= now() - interval '7 days'`,
+        where anchor_ts >= now() - interval '7 days'
+          and measurer_version = $1`,
+      [MEASURER_VERSION],
     ),
     // The alpha-decay readout (architecture §6 Q3): median minutes until half
     // of the 1d move was realized, sliced by the kind of the source that broke
@@ -130,8 +136,10 @@ export async function printStats(db: Db): Promise<void> {
          join news_clusters c on c.id = rs.cluster_id
          join news_sources s on s.id = c.first_source_id
         where rs.anchor_ts >= now() - interval '7 days'
+          and rs.measurer_version = $1
         group by s.kind
         order by s.kind`,
+      [MEASURER_VERSION],
     ),
     // Qualifying (cluster, instrument) pairs with no measurement row yet —
     // missing bars or horizons not yet settled (mirrors measureReactions'
@@ -146,9 +154,10 @@ export async function printStats(db: Db): Promise<void> {
             and l.confidence >= $1
             and not exists (
               select 1 from reaction_measurements m
-               where m.cluster_id = nci.cluster_id and m.instrument_id = l.instrument_id)
+               where m.cluster_id = nci.cluster_id and m.instrument_id = l.instrument_id
+                 and m.measurer_version = $2)
        ) q`,
-      [MIN_LINK_CONFIDENCE],
+      [MIN_LINK_CONFIDENCE, MEASURER_VERSION],
     ),
     db.$client.query<CalendarRow>(
       `select kind,

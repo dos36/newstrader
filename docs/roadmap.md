@@ -1,6 +1,6 @@
 # NewsTrader — Roadmap, Open Work, and Idea Parking Lot
 
-_Last updated: 2026-07-24, after M4 (commit `d214de6` + follow-ups) and ~14 days of live collection.
+_Last updated: 2026-08-28, after the M5 build (all seven §4 build-list items).
 This is the **forward-looking** doc: what is left, what was deliberately deferred, and every idea we
 do not want to lose._
 
@@ -27,15 +27,15 @@ Three rules for whoever picks this up next:
 
 ## 1. Where the build actually stands
 
-| Milestone (as built)                  | Status | Notes                                                                                     |
-| ------------------------------------- | ------ | ----------------------------------------------------------------------------------------- |
-| M0 — ingest + clustering              | ✅     | 9 sources live; dedup/clustering running; volume being measured                           |
-| M1 — entity resolution + PIT universe | ✅     | 503 S&P members + 3 coins; r1 resolver; membership **history backfill still missing**     |
-| M3 — prices + reaction analytics      | ✅     | Bars recorder + backfill; reaction/recovery/summary; two measurer clocks (`m1`, `m1-pub`) |
-| M4 — decision engine + SimBroker      | ✅     | Pure `decide()`, rules-as-data, SimBroker, replay **Mode A only**, kill switch, exits     |
-| **M2 — LLM interpretation**           | ❌     | **The only unbuilt pipeline stage.** Table + write path exist; nothing populates them     |
-| **M5 — evaluation & reporting**       | ❌     | Mode B, run metrics, source reliability, bursts, calibration, weekly report               |
-| M6/M7 — IBKR paper, Kraken, go-live   | ❌     | Human-gated on metrics; IBKR OAuth keys generated, activation not complete                |
+| Milestone (as built)                  | Status | Notes                                                                                                                                                                                                                                                              |
+| ------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| M0 — ingest + clustering              | ✅     | 9 sources live; dedup/clustering running; volume being measured                                                                                                                                                                                                    |
+| M1 — entity resolution + PIT universe | ✅     | 503 S&P members + 3 coins; r1 resolver; membership **history backfill still missing**                                                                                                                                                                              |
+| M3 — prices + reaction analytics      | ✅     | Bars recorder + backfill; reaction/recovery/summary; two measurer clocks (`m1`, `m1-pub`)                                                                                                                                                                          |
+| M4 — decision engine + SimBroker      | ✅     | Pure `decide()`, rules-as-data, SimBroker, replay **Mode A only**, kill switch, exits                                                                                                                                                                              |
+| M2 — LLM interpretation               | ✅     | **Built 2026-08-09** — sweep + CLI + Lambda (see §3); golden-set labeling is the human rest                                                                                                                                                                        |
+| **M5 — evaluation & reporting**       | ✅     | **Built 2026-08-28** — Mode B, `replay_run_metrics`, whitelist bridge, calibration (`eval:signals`), weekly report, session-cut alpha decay, latency pricing (`eval:latency`). Still open from the §4 question table: `source_reliability_stats` and `news_bursts` |
+| M6/M7 — IBKR paper, Kraken, go-live   | ❌     | Human-gated on metrics; IBKR OAuth keys generated, activation not complete                                                                                                                                                                                         |
 
 **The numbering mismatch, explained once:** the architecture doc planned M4 = decision engine
 _record-only_ and M5 = execution. We built both together as "M4" because SimBroker execution is
@@ -46,13 +46,23 @@ same money path. The doc's M6 (Mode B + evaluation) is what this doc calls M5.
 
 ## 2. Blocked / human-only tasks (do these first — they gate everything else)
 
-| Task                      | Why it blocks                                                                                        | Status                                                                   |
-| ------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| **Deploy to AWS**         | Local three-terminal operation loses crypto minute bars (Kraken keeps only ~12 h) and stops on sleep | Ready — stacks synth clean; needs AWS creds + one-time SSM params        |
-| **IBKR OAuth activation** | 24 h–2 weeks of vendor lead time; blocks all of M6                                                   | Keypairs generated in `secrets/ibkr/`; registration not confirmed        |
-| `FINNHUB_API_KEY` (free)  | Earnings calendar warn-skips without it → `already_expected` has no earnings ground truth            | **Not set** — zero `earnings` rows in `scheduled_events` because of this |
+| Task                      | Why it blocks                                                                                        | Status                                                                                                                                                                                                   |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Deploy to AWS**         | Local three-terminal operation loses crypto minute bars (Kraken keeps only ~12 h) and stops on sleep | Ready — stacks synth clean; needs AWS creds + one-time SSM params                                                                                                                                        |
+| **IBKR OAuth activation** | 24 h–2 weeks of vendor lead time; blocks all of M6                                                   | Keypairs generated in `secrets/ibkr/`; registration not confirmed. **Decision 2026-08-09: deliberately deferred** — kick off registration when M5 metrics start looking real; nothing before M6 needs it |
 
 Resolved since the last update, for the record:
+
+- **`FINNHUB_API_KEY` is set and the earnings calendar is live (2026-08-09).** The forward window
+  is synced and the collection window is backfilled from 2026-07-10 via the new
+  `calendar:sync --backfill-from` — backfilled rows carry `meta.backfilled: true` so M5 analytics
+  can tell after-the-fact ground truth from knowledge the live path actually had. Two measured
+  free-tier traps are now handled in code (details in the architecture doc's vendor table): the
+  earnings endpoint **silently caps responses at 1,500 rows keeping the latest dates** — the first
+  naive 90-day sync got only the last ~9 days, which is why the fetcher now chunks requests and
+  halves any chunk that comes back at the cap — and **history is served only ~30 days back**
+  (rolling), which is why the backfill floor is 2026-07-10 and why waiting longer would have
+  permanently lost earnings ground truth for the collected news window.
 
 - **The Massive Stocks Starter entitlement works** (snapshot + unlimited aggregates verified live),
   which unblocked equity bar recording and the AWS deploy.
@@ -62,33 +72,53 @@ Resolved since the last update, for the record:
 
 ---
 
-## 3. M2 — LLM interpretation (next build)
+## 3. M2 — LLM interpretation (BUILT 2026-08-09)
 
-**The landing spot is fully prepared.** `llm_signals` exists (migration 0004), `persistSignal()`
-writes it idempotently, `decideSignals()` already picks up any row with `scope='company'` and an
-instrument, and `decide-sweep` runs every 5 minutes in the deployed stack. Nothing else in the
-pipeline changes.
+**Shipped.** `pnpm cli interpret` (+ `--loop`) locally; `interpret-sweep` Lambda every 5 min in
+the trading stack (warn-skips until `/newstrader/anthropic-api-key` exists). One
+`claude-sonnet-5` structured call per novel cluster × instrument pair (link ≥ 0.75), idempotent
+on `signal_key`, written via `persistSignal()`; decide-sweep picks the rows up unchanged.
 
-### Build list
+How the build list landed (deviations noted, none silent):
 
-1. **The interpreter** — Anthropic API direct (`@anthropic-ai/sdk`), Sonnet, structured output
-   constrained by a zod-derived schema. One call per **novel cluster × resolved instrument**, never
-   per raw item. Input: headline + body from the raw store + instrument context (sector, recent
-   move since the anchor). A parse failure is a poison pill → DLQ, never retried past redrive.
-2. **Prompt registry + `prompt_version` discipline.** Prompt text lives in the repo, versioned;
-   every signal row is stamped. Re-prompting inserts new rows, never updates.
-3. **S3 audit trail** — full prompt + raw response to `llm/{date}/{signal_id}.json`, with
-   `input_tokens`/`output_tokens`/`cost_usd`/`latency_ms` on the row. Columns already exist.
-4. **Golden set (~100 hand-labeled items) in CI.** Prompt changes are measured, never vibes; fail
-   the build on accuracy regression vs the previous prompt version.
-5. **Per-day spend circuit breaker** wired to the kill switch (earnings season concentrates
-   55–70% of volume into ~6 weeks with 3–5× peak days — the breaker, not the average, is the net).
-6. **`retrospective` boolean column** (missing from the schema — needs a migration). Any LLM run
-   over pre-cutoff news must be flagged and quarantined from reliability stats. This is the single
-   most invalidating trap in LLM-trading backtests; the column is the enforcement point.
-7. **Item-code routing for 8-Ks** — high-signal item codes (2.02, 5.02, 4.02, 1.03, 2.01, 2.05,
-   2.06, 3.01, 1.01/1.02) already arrive in `meta.itemCodes` from the EDGAR adapter and can skip
-   any triage entirely; 7.01/8.01 (Reg FD grab-bag) do go to the LLM.
+1. **Interpreter** — `@anthropic-ai/sdk` behind a narrow `LlmClient` seam
+   (`packages/db/src/llm/`), structured output constrained by the zod schema in
+   `packages/core/src/interpret/` (closed 19-value event taxonomy — free text would fragment the
+   M5 whitelist bridge). Input: headline + per-source LEDE from the raw store (bodies are not
+   stored anywhere — headline+lede was the roadmap's own cost lever), instrument context, and
+   move-since-anchor computed by the SAME decide-repo helpers the stale-move gate uses, with a
+   prompt rule forbidding its use for direction.
+2. **Prompt registry** — versions are immutable data: registry entry = system text + model +
+   effort + max_tokens; a sha256 hash-pin test fails the build if a published version's text is
+   edited instead of minting a new one.
+3. **Audit trail** — one blob per ATTEMPT (successes and failures) with full system+user prompt,
+   raw response, usage: `llm/{date}/{sha16(signal_key)}.json` via the RawStore seam (FsRawStore
+   locally, the previously-unwired `LlmAuditBucket` deployed). Ref lands in both
+   `prompt_ref`/`response_ref`; token/cost/latency columns populated.
+4. **Golden set** — harness shipped as an opt-in eval (`RUN_GOLDEN_EVAL=1`, real API, ~$0.15) with
+   per-field accuracy vs a committed per-prompt-version baseline. **There is no CI in this repo**
+   (all "in CI" doc mentions were aspirational), so this is the documented manual gate for prompt
+   changes until CI exists. 15 machine-drafted starter rows from live clusters are committed
+   flagged `reviewed: false` — **Oleh: review labels** (`packages/db/src/llm/__fixtures__/GOLDEN-README.md`);
+   growing to ~100 labeled rows stays the human task.
+5. **Spend safety** — per-UTC-day cap over SUM(cost_usd) (`LLM_DAILY_SPEND_USD_CAP`, default $5:
+   ~2.5× the expected average day, so only an earnings-season 3–5× peak or a runaway trips it),
+   plus the interpreter reads the kill switch exactly like decide/execute (halt ⇒ zero calls).
+   The deployed spend-breach → kill-switch SNS wiring still attaches at deploy time (ops topic is
+   exported for exactly that).
+6. **`retrospective` column** — migration 0007, enforced BOTH directions: the live sweep only
+   sees a bounded lookback window (24 h default; older needs an explicit
+   `--retrospective-from/-to` which stamps the flag), and `loadUndecidedSignals` now EXCLUDES
+   retrospective rows — before this, a backfilled signal would have reached the money path (the
+   query had no freshness filter at all).
+7. **Item-code routing** — moot as routing (Sonnet-only, no triage tier to skip), but
+   `meta.itemCodes`/`formType` ride into the prompt with deterministic taxonomy hints
+   (2.02→earnings_result etc.; 7.01/8.01 deliberately unhinted).
+
+Also landed, unplanned: `llm_attempts` (migration 0007) — the poison-pill cap. A content-level
+failure (refusal/truncation/schema) burns one of 3 attempts per signal_key and never writes a
+signal row; TRANSPORT errors abort the pass without burning attempts, so an Anthropic outage
+cannot poison healthy candidates. A new prompt_version resets the budget by construction.
 
 ### The triage decision — ANSWERED by 14 days of data: Sonnet-only, no triage tier
 
@@ -118,17 +148,18 @@ do not have. Re-check if the universe expands or the link threshold is lowered.
 - Prompt caching on the fixed system prompt (~90% off the cached portion).
 - Headline + lede rather than full bodies on the first pass.
 
-### Open questions for M2
+### Open questions for M2 — all three RESOLVED at build time (2026-08-09)
 
-- **What does the LLM see about price action?** Recent move since anchor is available and would
-  help it judge "already priced in" — but feeding price into the interpreter risks it inventing
-  technical opinions. Recommendation: give it the move, forbid it from using it for direction.
-- **Sector and macro scope.** The schema supports `scope='sector'|'macro'`, but `signal_fanout`
-  (the table that expands a sector signal to constituents) **does not exist**. v1 decision stands:
-  macro is record-only. Sector fan-out needs the table + a `fanout_rules_version` before any
-  sector signal can trade.
-- **Reasoning summary storage.** The architecture asks for a ≤2-sentence reasoning summary; there
-  is no column for it. Either add one or rely on the S3 response blob (cheaper, less queryable).
+- **Price action in the prompt: yes, fenced.** The move since anchor is rendered under an explicit
+  "for already_expected ONLY — never for direction" header, and the system prompt repeats the
+  prohibition. Same helpers as the stale-move gate, so interpret and decide can never disagree
+  about the price.
+- **Sector and macro scope: company-only in v1, as decided.** The interpreter only ever emits
+  `scope='company'` rows; `signal_fanout` still does not exist and macro remains record-only.
+  Nothing new to decide — revisit with M5 evidence.
+- **Reasoning summary: a real column.** `llm_signals.reasoning` (migration 0007), ≤2 sentences
+  enforced by the output schema — queryable for the calibration review and the weekly report,
+  with the full blob still in the audit trail.
 
 ---
 
@@ -146,37 +177,37 @@ completely unbuilt**, and they were the user's original asks — do not let them
 | "Duplicates = popularity, how to weight it?" | Cluster velocity features — **built and snapshotted**; the weighting is a rules change, replayable                  | ✅     |
 | "Sector news affecting many stocks"          | Needs `signal_fanout` (see §3)                                                                                      | ❌     |
 
-### Build list
+### Build list — ALL SEVEN BUILT 2026-08-28
 
-1. **Replay Mode B (counterfactual).** Currently only Mode A (bit-for-bit regression) works, and
-   Mode B is explicitly warned as unsound. The blocker is concrete: **`DecideFeatures` is a flat
-   object with no `world` / `portfolio` tagging.** Mode B must reuse world features (cluster
-   velocity, calendar, prices) but recompute portfolio features (open positions, equity, exposure)
-   from the replay run's own simulated fills — otherwise a different rules version inherits a
-   portfolio trajectory it never would have produced. Work: tag the features, thread a per-run
-   simulated portfolio through `runReplay`, reuse the same SimBroker fill code.
-2. **`replay_run_metrics`** — hit rate, avg bps/trade, profit factor, max drawdown,
-   exposure-adjusted return per run, so "compare rules v3 vs v7" has a defined output.
-3. **The event-study → whitelist bridge (missing link, high value).** The default rules ship with
-   an **empty** `eventTypeWhitelist` by design: an event type earns entry only when its measured
-   post-news drift beats assumed costs. **But no job computes those per-event-type statistics.**
-   Without it the system can never legitimately start trading. Build: a batch job over
-   `reaction_measurements` × `llm_signals.event_type` producing mean/median abnormal return,
-   hit rate, and sample count per event type × horizon, with a clear "beats costs?" verdict.
-4. **Calibration report** — bucket `confidence` by decile against realized directional hit rate.
-   Also: `already_expected` (LLM judgment) vs `calendar_match` (deterministic ground truth), per
-   event type. This is how we learn whether the LLM's confidence means anything.
-5. **Weekly markdown report** — P&L, hit rate by event type, calibration table, best/worst trades
-   with the LLM's reasoning, rejected-signal counts by gate.
-6. **Re-measure alpha decay restricted to market-hours anchors (cheap, high value).** The current
-   `time_to_half_of_1d_move` medians are inflated because the clock runs through closed hours and
-   most early anchors were off-hours. Two full trading weeks now exist, so this is a query, not a
-   collection problem — and its output is the minutes-migration trigger, so it should not stay
-   distorted.
-7. **Ingestion-latency pricing (new, enabled by the two-clock measurer).** `m1` anchors on
-   `received_at` (tradeable truth), `m1-pub` on the earliest credible `published_at` (what the
-   market did once news existed). The per-pair delta between the curves **is** the measured cost of
-   our ingestion latency — the evidence that decides whether the $99/mo Benzinga add-on pays.
+1. ✅ **Replay Mode B (counterfactual).** `DecideFeatures` is now tagged
+   (`WORLD_FEATURE_KEYS` / `PORTFOLIO_FEATURE_KEYS` in core's trading contracts, with a partition
+   test that fails when a new feature is added untagged). `replay --mode b` reuses world features
+   from each live snapshot, recomputes the portfolio slice from the run's OWN simulated fills
+   (BacktestLedger + the shared exit walker in `packages/db/src/backtest/exits.ts`), and is
+   deterministic on re-run. A cross-label Mode A replay still warns
+   (`mode_b_unsound_portfolio_features`) instead of pretending to be sound.
+2. ✅ **`replay_run_metrics`** (migration 0011) — hit rate, avg bps/trade, profit factor, max
+   drawdown, exposure-adjusted return per run; pure math in `packages/core/src/eval/metrics.ts`,
+   written by Mode B replays AND backtests (conflict-do-nothing; a rerun keeps the original row).
+3. ✅ **The event-study → whitelist bridge** — the `eval:signals` whitelist-bridge table:
+   direction-signed mean/median abnormal drift, hit rate, and n per event type × horizon, with a
+   "beats costs?" verdict (`--cost-bps`, default 20 bps; YES additionally requires n ≥ 20).
+4. ✅ **Calibration report** — `eval:signals`: confidence deciles vs directional hit rate with
+   Wilson 95% CIs and ECE (plus cluster-deduped robustness columns), materiality deciles and
+   Spearman correlations, neutral signals scored separately, and the `already_expected` ×
+   `calendar_match` cross-table per event type. Prompt A/B via `--versions` (intersection of
+   answered pairs + paired flip/confidence-delta table); tune/holdout via `--split/--holdout`.
+5. ✅ **Weekly markdown report** — `report:weekly` (pure renderer + SQL collector): P&L, decision
+   funnel with rejected-signal counts by gate, hit rate by event type, calibration table,
+   best/worst trades with the LLM's reasoning.
+6. ✅ **Market-hours alpha decay** — every `eval:signals` table carries a NY-session cut
+   (weekend/pre/rth/post/overnight computed in SQL); `--session rth` is the undistorted
+   minutes-migration trigger series. Also new: a next-open reaction metric for off-hours anchors
+   (anchor close → first RTH bar ≥ next 09:30 ET, beta/SPY-adjusted, with gap_capture) —
+   query-level, promote to an `m3` measurer only if it proves useful.
+7. ✅ **Ingestion-latency pricing** — `eval:latency`: per-pair delta between the `m2-pub` and `m2`
+   abnormal-return curves per horizon and per first source, plus median latency seconds — the
+   Benzinga evidence.
 
 ---
 

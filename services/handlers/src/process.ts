@@ -8,7 +8,8 @@ import { loadItemsByIds, parseRawItemRecord, resolveProcessItem } from './lib/in
  * Process Lambda (q-items → here, batch 5, ReportBatchItemFailures enabled).
  * M1 scope: dedup/cluster, then deterministic entity resolution — each item is
  * attached to its story cluster and linked to instruments via the dictionary
- * matcher (interpret/decide arrive with M2+).
+ * matcher (interpret/decide run as their own 5-min sweeps, not from here —
+ * a query-driven sweep needs no message-schema change).
  *
  * Idempotency comes from Postgres (attach is advisory-locked and treats
  * redelivery as a no-op; link inserts are conflict-do-nothing on their PK), so

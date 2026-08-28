@@ -50,7 +50,12 @@ import {
   rulesVersions,
   scheduledEvents,
 } from '../schema.js';
-import { NO_QUOTE_SKIP_REASON, decideSignals, liveDecisionKey } from './decide-repo.js';
+import {
+  NO_QUOTE_SKIP_REASON,
+  decideSignals,
+  liveDecisionKey,
+  loadSettledCloseAt,
+} from './decide-repo.js';
 import { ensureDefaultRules } from './default-rules.js';
 import { compareRuns, createReplayRun, runReplay } from './replay-repo.js';
 import { createRulesVersion, getRulesVersion } from './rules-repo.js';
@@ -261,6 +266,7 @@ describe.skipIf(!testDatabaseUrl)('trading repos (integration)', () => {
     confidence?: number;
     analyzedAt?: Date;
     promptVersion?: string;
+    retrospective?: boolean;
   }): Promise<string> {
     const { id } = await persistSignal(db, {
       clusterId: input.clusterId,
@@ -275,10 +281,27 @@ describe.skipIf(!testDatabaseUrl)('trading repos (integration)', () => {
       confidence: input.confidence ?? 0.7,
       modelId: 'stub-model',
       promptVersion: input.promptVersion ?? 'p1',
+      ...(input.retrospective !== undefined ? { retrospective: input.retrospective } : {}),
       analyzedAt: input.analyzedAt ?? new Date(NOW.getTime() - 90 * MINUTE_MS),
     });
     return id;
   }
+
+  describe('loadSettledCloseAt', () => {
+    it('ignores a bar whose OPEN is inside the anchor minute — its close is post-news', async () => {
+      const instrumentId = await seedInstrument('BNDY');
+      // Opens at the anchor, so it closes 60s AFTER the news: this bar contains
+      // post-news trading and must not serve as the "before" price. The bug
+      // this pins returned 111 here, shrinking every observed move.
+      await seedMinuteBar(instrumentId, ANCHOR, '111');
+      expect(await loadSettledCloseAt(db, instrumentId, ANCHOR)).toBeNull();
+
+      // A bar OPENING one minute earlier closes exactly at the anchor — the
+      // last fully pre-news price, and the one that must be picked.
+      await seedMinuteBar(instrumentId, new Date(ANCHOR.getTime() - MINUTE_MS), '100');
+      expect(await loadSettledCloseAt(db, instrumentId, ANCHOR)).toBe('100.000000');
+    });
+  });
 
   /** Instrument with a settled anchor close (100) and a decision quote (125). */
   async function seedBars(instrumentId: string): Promise<Date> {
@@ -406,6 +429,22 @@ describe.skipIf(!testDatabaseUrl)('trading repos (integration)', () => {
       expect(await loadUndecidedSignals(db, { rulesVersionId: rulesB.id, batch: 1 })).toHaveLength(
         1,
       );
+    });
+
+    it('never loads retrospective signals — backfilled interpretation must not reach the money path', async () => {
+      const instrumentId = await seedInstrument('VNDL');
+      const clusterId = await seedCluster();
+      const rules = await createRulesVersion(db, { label: 'retro', config: testConfig() });
+
+      await seedSignal({ clusterId, instrumentId, retrospective: true });
+      const live = await seedSignal({
+        clusterId,
+        instrumentId,
+        promptVersion: 'p2', // distinct signal_key alongside the retrospective row
+      });
+
+      const loaded = await loadUndecidedSignals(db, { rulesVersionId: rules.id, batch: 10 });
+      expect(loaded.map((signal) => signal.id)).toEqual([live]);
     });
   });
 
@@ -845,6 +884,7 @@ describe.skipIf(!testDatabaseUrl)('trading repos (integration)', () => {
         skips: 2,
         skippedNoSnapshot: 1,
         modeBUnsoundPortfolioFeatures: false, // Mode A: same label the live decisions were produced under
+        simulated: null,
       });
 
       const liveRows = await db
@@ -881,6 +921,7 @@ describe.skipIf(!testDatabaseUrl)('trading repos (integration)', () => {
         skips: 0,
         skippedNoSnapshot: 1,
         modeBUnsoundPortfolioFeatures: false,
+        simulated: null,
       });
     });
 
@@ -926,6 +967,7 @@ describe.skipIf(!testDatabaseUrl)('trading repos (integration)', () => {
         // reused (openPositionsCount/equity) are NOT what strict-v2's own
         // trajectory would have produced.
         modeBUnsoundPortfolioFeatures: true,
+        simulated: null,
       });
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('mode_b_unsound_portfolio_features'),

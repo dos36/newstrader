@@ -85,22 +85,75 @@ describe('fetchEarnings', () => {
       headers: { 'content-type': 'application/json' },
     });
 
-  it('sends the key as the X-Finnhub-Token header — NEVER as a URL param', async () => {
-    let captured: { url?: string; init?: RequestInit | undefined } = {};
+  it('sends the key as the X-Finnhub-Token header on EVERY chunk — NEVER as a URL param', async () => {
+    const captured: Array<{ url: string; init?: RequestInit | undefined }> = [];
     const stub: FetchLike = async (url, init) => {
-      captured = { url, init };
+      captured.push({ url, init });
       return fixtureResponse();
     };
     const src = new FinnhubEarningsSource({ apiKey: 'sekret-key', fetchImpl: stub });
-    const entries = await src.fetchEarnings({ from: '2026-07-11', to: '2026-10-09' });
-    expect(entries).toHaveLength(2);
+    // 15 inclusive days = two CHUNK_DAYS(14) chunks: [07-11..07-24] + [07-25].
+    const entries = await src.fetchEarnings({ from: '2026-07-11', to: '2026-07-25' });
+    expect(entries).toHaveLength(4); // fixture's 2 entries served for each chunk
 
-    const url = new URL(captured.url ?? '');
-    expect(url.pathname).toBe('/api/v1/calendar/earnings');
-    expect(url.searchParams.get('from')).toBe('2026-07-11');
-    expect(url.searchParams.get('to')).toBe('2026-10-09');
-    expect(captured.url).not.toContain('sekret-key');
-    expect(new Headers(captured.init?.headers).get('x-finnhub-token')).toBe('sekret-key');
+    expect(captured).toHaveLength(2);
+    const first = new URL(captured[0]?.url ?? '');
+    expect(first.pathname).toBe('/api/v1/calendar/earnings');
+    expect(first.searchParams.get('from')).toBe('2026-07-11');
+    expect(first.searchParams.get('to')).toBe('2026-07-24');
+    const second = new URL(captured[1]?.url ?? '');
+    expect(second.searchParams.get('from')).toBe('2026-07-25');
+    expect(second.searchParams.get('to')).toBe('2026-07-25');
+    for (const call of captured) {
+      expect(call.url).not.toContain('sekret-key');
+      expect(new Headers(call.init?.headers).get('x-finnhub-token')).toBe('sekret-key');
+    }
+  });
+
+  it('halves any chunk that comes back at the silent 1,500-entry cap', async () => {
+    const capped = {
+      earningsCalendar: Array.from({ length: 1500 }, (_, i) => ({
+        date: '2026-07-15',
+        symbol: `S${i}`,
+        hour: 'amc',
+      })),
+    };
+    const ranges: string[] = [];
+    const stub: FetchLike = async (url) => {
+      const parsed = new URL(url);
+      const from = parsed.searchParams.get('from') ?? '';
+      const to = parsed.searchParams.get('to') ?? '';
+      ranges.push(`${from}..${to}`);
+      const widthDays =
+        (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+      return widthDays > 7
+        ? new Response(JSON.stringify(capped), { status: 200 })
+        : fixtureResponse();
+    };
+    const src = new FinnhubEarningsSource({ apiKey: 'k', fetchImpl: stub });
+    // One 14-day chunk; the full-width call caps, both 7-day halves succeed.
+    const entries = await src.fetchEarnings({ from: '2026-07-11', to: '2026-07-24' });
+    expect(ranges).toEqual([
+      '2026-07-11..2026-07-24',
+      '2026-07-11..2026-07-17',
+      '2026-07-18..2026-07-24',
+    ]);
+    expect(entries).toHaveLength(4);
+  });
+
+  it('refuses silent data loss when a SINGLE DAY hits the cap', async () => {
+    const capped = {
+      earningsCalendar: Array.from({ length: 1500 }, (_, i) => ({
+        date: '2026-07-15',
+        symbol: `S${i}`,
+        hour: 'amc',
+      })),
+    };
+    const stub: FetchLike = async () => new Response(JSON.stringify(capped), { status: 200 });
+    const src = new FinnhubEarningsSource({ apiKey: 'k', fetchImpl: stub });
+    await expect(src.fetchEarnings({ from: '2026-07-15', to: '2026-07-15' })).rejects.toThrow(
+      /cannot subdivide/,
+    );
   });
 
   it('rejects a malformed date range before any network call', async () => {

@@ -221,6 +221,127 @@ measures whether the model actually understands "priced in."
 mis-parsed calendar would mean the system believes nothing is scheduled — which is worse than a
 loud failure.
 
+### 3.7b The interpretation stage (M2) — text in, ONE structured opinion out
+
+**One LLM call per novel cluster × resolved instrument, never per raw item.** The unit is the
+roadmap's measured denominator (~179 pairs/day): a cluster with no ≥0.75-confidence instrument
+link has no tradeable target and never reaches the model. The 0.75 threshold deliberately
+excludes `nameAlias` (0.7) — the measured ~40%-false-positive channel.
+
+**The model emits an opinion, not an order.** Output is schema-constrained (API-side json_schema
+
+- client-side zod): a closed 19-value `event_type` taxonomy, direction, magnitude-only
+  `expected_move_bps`, horizon, `already_expected`, materiality, confidence, and a ≤2-sentence
+  `reasoning`. The taxonomy is CLOSED because the whitelist gate matches exact strings and M5's
+  event-study bridge aggregates per type — free-form labels would fragment the statistics that
+  decide what ever gets traded.
+
+**Confidence is framed as a measured probability in the prompt itself** ("across many signals
+where you say 0.8, the direction should be right about 80% of the time") — the M5 calibration
+report is the standing test of whether that framing works.
+
+**The model sees the price move since the anchor, fenced.** It helps judge "already priced in",
+but the prompt forbids using it for direction (the risk is the model inventing technical
+opinions). Interpret reuses the SAME anchor/quote helpers as the stale-move gate, so the two
+stages can never disagree about what the price did.
+
+**Prompt versions are immutable data, like rules.** A registry entry = system text + model id +
+effort + max_tokens; every row is stamped `prompt_version` + `model_id`; `signal_key` embeds both,
+so re-prompting under a new version INSERTS new rows and A/B comparison is a join. A sha256
+hash-pin test fails the build if anyone edits a published version's text instead of minting a new
+version. Prompt changes are gated by the opt-in golden-set eval (no CI exists; it is the
+documented manual step).
+
+**Failure taxonomy — the part that keeps the money path clean:**
+
+- **Content failures** (safety refusal, truncation, schema-invalid output) write NO signal row —
+  signals are facts, and a half-parsed opinion is not one. They DO write the audit blob (the
+  debugging evidence) and burn one of 3 attempts in `llm_attempts` (a deliberate mutable
+  exception, keyed by signal_key so a new prompt version resets the budget).
+- **Transport failures** (network, 429/5xx) abort the pass and burn NOTHING — an Anthropic outage
+  must not poison healthy candidates; the next 5-minute tick retries for free.
+
+**Two spend guards, then the kill switch.** A per-UTC-day cap over `SUM(cost_usd)`
+(`LLM_DAILY_SPEND_USD_CAP`, default $5 ≈ 2.5× an average day — sized so only an earnings-season
+peak or a runaway trips it) stops API calls when reached; cost per call is computed from usage
+tokens at hardcoded standard prices (an unknown model id THROWS rather than pricing at zero,
+so the breaker can never silently go blind). Independently, the interpreter reads the kill switch
+exactly like decide/execute: halt ⇒ zero API calls.
+
+**Two transports, and only one of them is measurable.** `transport='api'` (the SDK plus
+`ANTHROPIC_API_KEY`) is the only mode that honours the prompt version's `effort` and `max_tokens`
+and enforces the output schema at the API, so it is the only mode whose rows are replayable. The
+dev-only `transport='cli'` mode reaches the model through the Claude Code CLI on a personal
+subscription: it can set neither knob, appends the registered system prompt to a Claude Code
+harness prompt this repo does not version, and carries ~25.7k harness tokens per call. Three
+mechanisms keep the two apart. A `:cli` suffix in `signal_key` means a dev call never occupies the
+slot the real API call will want (the pair stays a candidate for `--mode api`). The
+`llm_signals.transport` column, CHECK-constrained to the two values, is what every analysis filters
+on. And the audit blob records `contractDivergence` — requested versus applied. Deployed code
+cannot reach the CLI mode at all: the client throws when `AWS_LAMBDA_FUNCTION_NAME` is set. Note
+that `cost_usd` on a `cli` row is inflated by the harness prefix (a measured $0.15 against under a
+cent over the API), which is left uncorrected on purpose — the spend breaker must over-estimate.
+
+**Context is reconstructed at a single point in time, not read off the wall clock.** Every input
+the model sees is assembled as of `min(cluster anchor + 5 min, now)` — the price behind
+`priceMoveSinceAnchorBps`, which cluster items are listed, and the item and source counts. Five
+minutes is the deployed sweep cadence, so it is what a timely live pass would have seen; the clamp
+stops a seconds-old cluster from being handed a future price.
+
+**This closed a real leak, and it is why `v2` exists.** Prompt version `v1` assembled context with
+the wall clock. Any candidate not interpreted within minutes of arrival — every backfill, and any
+live candidate that sat in the queue — got `Move since story arrival` computed to _today_, plus
+follow-up coverage that did not exist at the anchor, plus the cluster's final popularity totals.
+That is look-ahead handed to the model in its own prompt, and unlike training contamination it does
+not depend on the model at all. `v2` has byte-identical system text to `v1` and differs only in
+context assembly; because the model sees different numbers for the same story, the two versions'
+rows must never be pooled, which is exactly what a new `prompt_version` (and therefore a new
+`signal_key`) enforces. Do not run `v1` for new measurement.
+
+**v3 removed the last of the look-ahead and raised the reasoning budget.** Two changes from v2,
+both aimed at measurement rather than at getting the pipeline running. First, the price context is
+now the move over the session BEFORE arrival, and no post-arrival price is shown at all. v1 and v2
+showed the move from the anchor close to five minutes later — the opening slice of the reaction
+being predicted — while telling the model to read it as evidence the news was already priced in.
+The anchor close sits after any run-up, so the run-up was never visible and the number shown was
+the reaction. Second, `effort` went from `medium` to `xhigh`: calibrating a direction probability
+from a headline and a two-line lede is reasoning work, and the 10k token ceiling now has room for
+it. The system text is otherwise byte-identical to v1, and a test pins that the only diff is the
+price bullet — a small diff is what makes v1-vs-v3 comparable.
+
+**The binding constraint on quality was source text, not any limit in this repo — now addressed
+for 8-Ks.** The document sweep (`pnpm cli edgar:documents`) fetches each filing's primary document
+and its exhibits and stores the flattened text, which the interpreter prefers over the Atom summary.
+Measured on the first real filings: ~23,000 characters each against 57 before. Fetch bookkeeping
+lives in `item_documents`, one row per item, with 'ok' and 'empty' terminal and 'failed' retried to
+a cap of 3 — so one unreachable filing cannot stall the queue. The original measurement, which is
+why any of this exists: Measured over 900
+sampled cluster items: Massive articles carry a median 456-character lede, RSS 167, and SEC EDGAR
+**57** — the EDGAR "lede" is the Atom summary, which is filing metadata (`Filed: … AccNo: … Size:
+11 KB`), not filing content. Nothing hits the 1200-character `MAX_LEDE_CHARS` cap, so raising any
+prompt-size limit changes nothing. 8-K filings are 12% of candidate pairs and the highest-signal
+source in the set, and the model currently sees only their form type and item codes. Every 8-K does
+carry item codes (9,023 of 9,023), which is what makes the deterministic hint carry so much weight
+in the prompt.
+
+**Retrospective quarantine is enforced in both directions.** The live sweep only examines
+clusters inside a bounded lookback (24 h); interpreting anything older requires an explicit
+backfill window that stamps `retrospective=true`, and `loadUndecidedSignals` EXCLUDES such rows, so
+a backfilled interpretation can never produce a live decision. `runReplay` excludes them too — an
+outcome-aware signal must not enter replay P&L either. The backfill window itself is bounded on the
+recent side as well: a window ending inside the live lookback is REFUSED, because `signal_key` does
+not encode retrospective-ness while being unique, so an overlapping backfill row would take the
+live row's slot and quarantine that pair from decide permanently. Two distinct hazards justify this.
+The prompt leak above is the concrete one and applies to every backfill regardless of model.
+Training contamination is the weaker, conditional one: it bites only for news older than the pinned
+model's knowledge cutoff, is unmeasurable, and is not a reason to trust a backfill that also leaks.
+
+**Every attempt leaves a full audit blob** — system + user prompt, raw response, usage, latency —
+at `llm/{date}/{sha16(signal_key)}.json` (FsRawStore locally, LlmAuditBucket deployed), ref'd
+from `prompt_ref`/`response_ref`. The prompt input is headline + per-source LEDE (EDGAR summary /
+RSS description / Massive description), NOT full bodies — the roadmap's own cost lever; a missing
+payload degrades to headline-only rather than failing the candidate.
+
 ### 3.8 The decision engine — nine gates, every one recorded
 
 **`decide()` is a pure function of (signal, features, quote, config)** with no clock, no randomness,
@@ -490,44 +611,53 @@ version, never by editing the default in place.
 
 ### Pipeline constants (code-level; changing these is a code change)
 
-| Constant                          | Value               | Where                           | Why                                                                         |
-| --------------------------------- | ------------------- | ------------------------------- | --------------------------------------------------------------------------- |
-| `HEADLINE_SIMILARITY_THRESHOLD`   | 0.5                 | `clustering-repo.ts`            | Headline-only comparison; over-merge is the cheaper error                   |
-| `CANDIDATE_WINDOW_HOURS`          | 48                  | `clustering-repo.ts`            | Story lifetime before a follow-up is genuinely new                          |
-| `RESOLVER_VERSION`                | `'r1'`              | `resolver/match.ts`             | Stamped on links; a bump re-resolves everything                             |
-| `CONFIDENCE.*`                    | 1.0 → 0.7           | `resolver/match.ts`             | Per-method reliability (see §3.3)                                           |
-| `MIN_SOURCE_HINT_TICKER_LENGTH`   | 3                   | `resolver/match.ts`             | 1–2 char tickers collide with English words                                 |
-| `MIN_NAME_ALIAS_LENGTH`           | 4                   | `resolver/match.ts`             | Shorter names are prose collisions (digit-bearing names like "3M" excepted) |
-| `MIN_LINK_CONFIDENCE`             | 0.75                | `shared-constants.ts`           | Admits crypto keywords (0.8), excludes 40%-FP name matches (0.7)            |
-| `EVENT_WINDOW_BEFORE_MS`          | 72 h                | `bars/windows.ts`               | Off-hours anchors need the prior session's close, up to a long weekend      |
-| `EVENT_WINDOW_AFTER_MS`           | 5 d                 | `bars/windows.ts`               | The longest reaction horizon                                                |
-| `MEASURER_VERSION`                | `'m1'`              | `reaction/measure-repo.ts`      | Received-clock (tradeable) measurements                                     |
-| `PUB_MEASURER_VERSION`            | `'m1-pub'`          | `reaction/measure-repo.ts`      | Publication-clock measurements (latency pricing)                            |
-| `PUB_MAX_CLOCK_SKEW_MS`           | 2 min               | `reaction/measure-repo.ts`      | Tolerates skew without accepting future-dated claims                        |
-| `PUB_MAX_STALENESS_MS`            | 24 h                | `reaction/measure-repo.ts`      | Rejects implausibly backdated publication claims                            |
-| `DEFAULT_PRICE_STALENESS_MINUTES` | 30                  | `reaction/math.ts`              | Freshness bound before the "later bar proves it" rule applies               |
-| `HORIZON_FALLBACK_CAP_MS`         | 3 d                 | `reaction/math.ts`              | Next-session fallback for daily horizons over weekends                      |
-| `MIN_BETA_OVERLAP_DAYS`           | 30                  | `reaction/math.ts`              | Below this, beta is noise — degrade to raw returns                          |
-| `FLAT_1D_THRESHOLD_BPS`           | 10                  | `reaction/math.ts`              | Below this the 1-day move is "flat"; time-to-half is meaningless            |
-| `RECOVERY_TRIGGER_BPS`            | −50                 | `reaction/math.ts`              | Only genuinely negative events get recovery metrics                         |
-| `DEFAULT_RECOVERY_WINDOW_DAYS`    | 30                  | `reaction/math.ts`              | Long enough for reversion, short enough to conclude                         |
-| `BETA_LOOKBACK_DAYS`              | 90                  | `reaction/measure-repo.ts`      | Enough daily closes for a stable beta                                       |
-| `SIM_SLIPPAGE_BPS`                | 5                   | `broker/sim-fill.ts`            | Adverse-direction fill assumption; sensitivity-testable                     |
-| `SIM_FEE_BPS`                     | 0 / 26              | `broker/sim-fill.ts`            | Commission-free equities; Kraken-taker-like crypto                          |
-| `HORIZON_DURATION_MS`             | 6.5 h / 1 / 3 / 5 d | `decide/exit-rules.ts`          | Intraday is one session; the rest are calendar days                         |
-| `MAX_CLOSE_ATTEMPTS`              | 3                   | `execution/position-manager.ts` | Bounded retries, then a human — never an infinite loop                      |
-| `DECIMAL_SCALE` / `SCALE`         | 8 / 1e8             | `decide/decimal.ts`             | Fixed-point precision for replay-stable arithmetic                          |
-| `CLIENT_ORDER_ID_LENGTH`          | 32                  | `decide/intent.ts`              | Hash prefix length for deterministic order ids                              |
-| `CALENDAR_TOLERANCE_MINUTES`      | 60                  | `trading/features.ts`           | Window around the anchor for a scheduled-event match                        |
-| `DOLLAR_VOLUME_LOOKBACK_DAYS`     | 20                  | `trading/features.ts`           | Daily bars used for the liquidity median                                    |
-| `MIN_DOLLAR_VOLUME_ROWS`          | 10                  | `trading/features.ts`           | Below this the median is untrustworthy → liquidity unknown → gate fails     |
-| `QUOTE_MAX_AGE_MS`                | 24 h                | `trading/decide-repo.ts`        | Older than this, no quote exists → `no_quote` skip                          |
-| `REFERENCE_PRICE_MAX_AGE_MS`      | 24 h                | `execution/sim-broker.ts`       | Stale reference close → order rejected rather than filled at a fiction      |
-| `EXIT_REFERENCE_MAX_AGE_MS`       | 24 h                | `execution/position-manager.ts` | No fresh bar → skip the position entirely, do not consume a close attempt   |
-| `DEFAULT_PAPER_EQUITY_USD`        | `'100000'`          | `execution/sim-broker.ts`       | Starting paper cash (`PAPER_EQUITY_USD` overrides)                          |
-| `COST_APPORTION_SCALE`            | 8                   | `execution/positions.ts`        | Partial-close cost slices, matching the qty column scale                    |
-| `AVG_ENTRY_PRICE_SCALE`           | 6                   | `execution/positions.ts`        | Average entry reported at the price columns' scale                          |
-| `FILL_PRICE/QTY/FEE_SCALE`        | 6 / 8 / 6           | `broker/sim-fill.ts`            | Rounding targets matching the `fills` columns exactly                       |
+| Constant                          | Value                    | Where                           | Why                                                                             |
+| --------------------------------- | ------------------------ | ------------------------------- | ------------------------------------------------------------------------------- |
+| `HEADLINE_SIMILARITY_THRESHOLD`   | 0.5                      | `clustering-repo.ts`            | Headline-only comparison; over-merge is the cheaper error                       |
+| `CANDIDATE_WINDOW_HOURS`          | 48                       | `clustering-repo.ts`            | Story lifetime before a follow-up is genuinely new                              |
+| `RESOLVER_VERSION`                | `'r1'`                   | `resolver/match.ts`             | Stamped on links; a bump re-resolves everything                                 |
+| `CONFIDENCE.*`                    | 1.0 → 0.7                | `resolver/match.ts`             | Per-method reliability (see §3.3)                                               |
+| `MIN_SOURCE_HINT_TICKER_LENGTH`   | 3                        | `resolver/match.ts`             | 1–2 char tickers collide with English words                                     |
+| `MIN_NAME_ALIAS_LENGTH`           | 4                        | `resolver/match.ts`             | Shorter names are prose collisions (digit-bearing names like "3M" excepted)     |
+| `MIN_LINK_CONFIDENCE`             | 0.75                     | `shared-constants.ts`           | Admits crypto keywords (0.8), excludes 40%-FP name matches (0.7)                |
+| `EVENT_WINDOW_BEFORE_MS`          | 72 h                     | `bars/windows.ts`               | Off-hours anchors need the prior session's close, up to a long weekend          |
+| `EVENT_WINDOW_AFTER_MS`           | 5 d                      | `bars/windows.ts`               | The longest reaction horizon                                                    |
+| `MEASURER_VERSION`                | `'m2'`                   | `reaction/measure-repo.ts`      | Received-clock (tradeable) measurements                                         |
+| `PUB_MEASURER_VERSION`            | `'m2-pub'`               | `reaction/measure-repo.ts`      | Publication-clock measurements (latency pricing)                                |
+| `PUB_MAX_CLOCK_SKEW_MS`           | 2 min                    | `reaction/measure-repo.ts`      | Tolerates skew without accepting future-dated claims                            |
+| `PUB_MAX_STALENESS_MS`            | 24 h                     | `reaction/measure-repo.ts`      | Rejects implausibly backdated publication claims                                |
+| `DEFAULT_PRICE_STALENESS_MINUTES` | 30                       | `reaction/math.ts`              | Freshness bound before the "later bar proves it" rule applies                   |
+| `HORIZON_FALLBACK_CAP_MS`         | 3 d                      | `reaction/math.ts`              | Next-session fallback for daily horizons over weekends                          |
+| `MIN_BETA_OVERLAP_DAYS`           | 30                       | `reaction/math.ts`              | Below this, beta is noise — degrade to raw returns                              |
+| `FLAT_1D_THRESHOLD_BPS`           | 10                       | `reaction/math.ts`              | Below this the 1-day move is "flat"; time-to-half is meaningless                |
+| `RECOVERY_TRIGGER_BPS`            | −50                      | `reaction/math.ts`              | Only genuinely negative events get recovery metrics                             |
+| `DEFAULT_RECOVERY_WINDOW_DAYS`    | 30                       | `reaction/math.ts`              | Long enough for reversion, short enough to conclude                             |
+| `BETA_LOOKBACK_DAYS`              | 90                       | `reaction/measure-repo.ts`      | Enough daily closes for a stable beta                                           |
+| `SIM_SLIPPAGE_BPS`                | 5                        | `broker/sim-fill.ts`            | Adverse-direction fill assumption; sensitivity-testable                         |
+| `SIM_FEE_BPS`                     | 0 / 26                   | `broker/sim-fill.ts`            | Commission-free equities; Kraken-taker-like crypto                              |
+| `HORIZON_DURATION_MS`             | 6.5 h / 1 / 3 / 5 d      | `decide/exit-rules.ts`          | Intraday is one session; the rest are calendar days                             |
+| `MAX_CLOSE_ATTEMPTS`              | 3                        | `execution/position-manager.ts` | Bounded retries, then a human — never an infinite loop                          |
+| `DECIMAL_SCALE` / `SCALE`         | 8 / 1e8                  | `decide/decimal.ts`             | Fixed-point precision for replay-stable arithmetic                              |
+| `CLIENT_ORDER_ID_LENGTH`          | 32                       | `decide/intent.ts`              | Hash prefix length for deterministic order ids                                  |
+| `CALENDAR_TOLERANCE_MINUTES`      | 60                       | `trading/features.ts`           | Window around the anchor for a scheduled-event match                            |
+| `DOLLAR_VOLUME_LOOKBACK_DAYS`     | 20                       | `trading/features.ts`           | Daily bars used for the liquidity median                                        |
+| `MIN_DOLLAR_VOLUME_ROWS`          | 10                       | `trading/features.ts`           | Below this the median is untrustworthy → liquidity unknown → gate fails         |
+| `QUOTE_MAX_AGE_MS`                | 24 h                     | `trading/decide-repo.ts`        | Older than this, no quote exists → `no_quote` skip                              |
+| `REFERENCE_PRICE_MAX_AGE_MS`      | 24 h                     | `execution/sim-broker.ts`       | Stale reference close → order rejected rather than filled at a fiction          |
+| `EXIT_REFERENCE_MAX_AGE_MS`       | 24 h                     | `execution/position-manager.ts` | No fresh bar → skip the position entirely, do not consume a close attempt       |
+| `DEFAULT_PAPER_EQUITY_USD`        | `'100000'`               | `execution/sim-broker.ts`       | Starting paper cash (`PAPER_EQUITY_USD` overrides)                              |
+| `COST_APPORTION_SCALE`            | 8                        | `execution/positions.ts`        | Partial-close cost slices, matching the qty column scale                        |
+| `AVG_ENTRY_PRICE_SCALE`           | 6                        | `execution/positions.ts`        | Average entry reported at the price columns' scale                              |
+| `FILL_PRICE/QTY/FEE_SCALE`        | 6 / 8 / 6                | `broker/sim-fill.ts`            | Rounding targets matching the `fills` columns exactly                           |
+| Prompt `v1` params                | sonnet-5 / medium / 1500 | `core/interpret/registry.ts`    | Model + effort + max_tokens ARE the prompt-version contract; hash-pin-tested    |
+| `DEFAULT_LOOKBACK_HOURS`          | 24                       | `llm/interpret-sweep.ts`        | The live window; anything older is a deliberate `--retrospective` backfill      |
+| `DEFAULT_BATCH` (interpret)       | 25 CLI / 15 Lambda       | `llm/interpret-sweep.ts`        | Lambda batch keeps a full pass under its 4-min timeout; both ≫ ~179/day         |
+| `DEFAULT_DAILY_SPEND_CAP_USD`     | 5                        | `llm/interpret-sweep.ts`        | ~2.5× an average day — only an earnings-season peak or a runaway trips it       |
+| `MAX_ATTEMPTS` (interpret)        | 3                        | `llm/interpret-sweep.ts`        | Poison-pill budget per signal_key; new prompt version resets it                 |
+| `ITEMS_PER_PROMPT`                | 3                        | `llm/interpret-sweep.ts`        | Earliest items carry the story; more is cost without signal                     |
+| `MAX_LEDE_CHARS`                  | 1200                     | `llm/lede.ts`                   | Lede-not-body cost lever; core's builder hard-caps at 1500 as a belt            |
+| `MODEL_PRICING`                   | $3/$15 per MTok          | `llm/cost.ts`                   | STANDARD (non-promo) sonnet-5 list — the spend breaker must over-estimate       |
+| `INTERPRET_OBSERVATION_LAG_MS`    | 5 min                    | `core/interpret/registry.ts`    | The instant all context is reconstructed at; matches the deployed sweep cadence |
 
 **Every value above that changes behavior now carries its reasoning in the code**, including why the
 three 24-hour liveness bounds must be equal to each other (a stricter execution bound than decide
@@ -542,5 +672,7 @@ exist purely to mirror a column's precision.
   (`RESOLVER_VERSION`, `MEASURER_VERSION`) if the change alters recorded outputs, so old rows stay
   comparable instead of silently mixing methodologies.
 - **Environment** — `DATABASE_URL`, `EDGAR_USER_AGENT`, `MASSIVE_API_KEY`, `MASSIVE_BASE_URL`,
-  `RAW_STORE_DIR`, `FINNHUB_API_KEY` (optional), `PAPER_EQUITY_USD` (optional),
+  `RAW_STORE_DIR`, `FINNHUB_API_KEY` (optional), `ANTHROPIC_API_KEY` (M2 interpret),
+  `LLM_TRANSPORT` / `CLAUDE_CLI_PATH` (optional, dev-only CLI transport),
+  `LLM_DAILY_SPEND_USD_CAP` (optional, default 5), `PAPER_EQUITY_USD` (optional),
   `NEWSTRADER_KILL_SWITCH` / `KILL_SWITCH_SSM_PARAM`, `ENGINE_VERSION` (falls back to the git SHA).

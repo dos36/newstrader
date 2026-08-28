@@ -267,7 +267,13 @@ export function reactionLadder(
     let abnormal = rawReturnBps;
     let betaUsed: number | null = null;
     if (betaValue !== null && benchAnchor !== undefined) {
-      const benchHorizon = settledBarAt(benchBars1m, horizonTs, freshMinutes);
+      // Resolve the bench leg at the bar we actually priced the instrument on,
+      // not at the nominal horizonTs. They differ whenever the instrument leg
+      // fell forward (weekend/holiday anchor) or a halt shifted it: sampling
+      // the bench at horizonTs then measured the two legs over different
+      // windows, so the guard below failed and the row silently degraded to
+      // raw = abnormal — carrying the whole weekend market gap.
+      const benchHorizon = settledBarAt(benchBars1m, horizonBar.ts, freshMinutes);
       if (benchHorizon !== undefined && benchHorizon.ts.getTime() > benchAnchor.ts.getTime()) {
         const benchBps = simpleReturnBps(benchAnchor.close, benchHorizon.close);
         abnormal = abnormalReturnBps(rawReturnBps, benchBps, betaValue);

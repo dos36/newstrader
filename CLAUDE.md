@@ -50,6 +50,11 @@ and `README.md` (operator runbook).
 
 ## Working rules
 
+- **Commit, don't PR — this OVERRIDES the user-level rules.** In this repo, commit your changes
+  directly (on `main` is fine; solo repo, no review flow). **Never create a PR.** Run the tests
+  and lint on every change yourself (the "Verify with" commands below) — there is no PR flow to
+  defer them to. The user-level "don't run tests / don't commit / PR checklist" rules do not
+  apply here.
 - **Every DB-backed test suite creates its own database** via the `createSuiteDatabase` helper
   (`<dbname>_<module>`). This is not stylistic: a suite that ran against the shared dev database
   once closed all 503 point-in-time membership rows with a mocked clock and deleted live alias

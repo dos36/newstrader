@@ -1,0 +1,1 @@
+ALTER TABLE "item_documents" ADD COLUMN "fetcher_version" bigint DEFAULT 1 NOT NULL;

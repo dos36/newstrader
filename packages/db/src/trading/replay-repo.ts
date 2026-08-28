@@ -1,8 +1,19 @@
-import { DecideFeatures, QuoteSnapshot, RulesConfig, SignalInput, newId } from '@newstrader/core';
-import type { DecideFn } from '@newstrader/core';
+import {
+  DecideFeatures,
+  QuoteSnapshot,
+  RulesConfig,
+  SignalInput,
+  buildOrderIntent,
+  computeRunMetrics,
+  newId,
+  withPortfolioFeatures,
+} from '@newstrader/core';
+import type { DecideFn, PortfolioFeatures, RunMetrics } from '@newstrader/core';
 import { and, asc, eq, gte, inArray, isNotNull, isNull, lte } from 'drizzle-orm';
 
 import type { Db } from '../client.js';
+import { settleExitsUpTo } from '../backtest/exits.js';
+import { BacktestLedger } from '../backtest/ledger.js';
 import {
   decisions,
   instruments,
@@ -11,7 +22,8 @@ import {
   replayRuns,
   rulesVersions,
 } from '../schema.js';
-import { NO_QUOTE_SKIP_REASON, roundSizedNotional } from './decide-repo.js';
+import { NO_QUOTE_SKIP_REASON, loadDecisionQuote, roundSizedNotional } from './decide-repo.js';
+import { persistRunMetrics } from './run-metrics-repo.js';
 import { getRulesVersion } from './rules-repo.js';
 
 /**
@@ -29,14 +41,23 @@ import { getRulesVersion } from './rules-repo.js';
  * actually was in the LIVE run, never recomputed for the replay's own rules
  * version. That is sound for Mode A (replaying the SAME label the live
  * decisions were produced under — the portfolio trajectory the live run
- * actually took IS the trajectory this replay reruns). It is quietly
- * UNSOUND for Mode B (replaying a DIFFERENT label): a stricter or looser
- * rules version would have opened/skipped a different set of positions
- * along the way, so live's openPositionsCount/equity are not what this
- * label would actually have seen. runReplay does not simulate a
- * counterfactual portfolio (out of scope for v1) — it detects the mismatch
- * and emits a structured warning (mode_b_unsound_portfolio_features)
- * instead of silently presenting Mode-B results as trustworthy.
+ * actually took IS the trajectory this replay reruns). It is UNSOUND for a
+ * DIFFERENT label with the features reused verbatim: a stricter or looser
+ * rules version would have opened/skipped a different set of positions along
+ * the way, so live's openPositionsCount/equity are not what that label would
+ * actually have seen.
+ *
+ * Mode B (options.simulatePortfolio, M5) closes exactly that gap using the
+ * world/portfolio feature tagging in core (WORLD_FEATURE_KEYS /
+ * PORTFOLIO_FEATURE_KEYS): WORLD features stay as snapshotted on the live
+ * decision — they were true regardless of which rules ran — while the
+ * PORTFOLIO slice is recomputed per decision from the run's OWN simulated
+ * fills (a BacktestLedger driven by the production fill model, with exits
+ * walked over recorded bars between decisions). The run's trades then produce
+ * a replay_run_metrics row, the defined output of "compare rules v3 vs v7".
+ * Without simulatePortfolio, a label mismatch still only warns
+ * (mode_b_unsound_portfolio_features) rather than silently presenting
+ * reused-portfolio results as trustworthy.
  */
 
 export interface CreateReplayRunInput {
@@ -45,6 +66,8 @@ export interface CreateReplayRunInput {
   from: Date | null;
   to: Date | null;
   notes?: string | null;
+  /** Reproducibility knobs (mode, starting cash, slippage) — recorded, not read back. */
+  params?: Record<string, unknown>;
 }
 
 export interface ReplayRun {
@@ -61,7 +84,7 @@ export async function createReplayRun(db: Db, input: CreateReplayRunInput): Prom
     .values({
       id: newId(),
       rulesVersionId: rules.id,
-      params: {},
+      params: input.params ?? {},
       signalsFrom: input.from,
       signalsTo: input.to,
       notes: input.notes ?? null,
@@ -100,8 +123,31 @@ export interface ReplayDeps {
   decide: DecideFn;
 }
 
+export interface SimulatePortfolioOptions {
+  /** Default '100000.00'. */
+  startingCashUsd?: string;
+  /** Override the production fill model's slippage (bps). */
+  slippageBps?: number;
+}
+
+/** Mode B output: what this run's own simulated portfolio did. */
+export interface SimulatedPortfolioOutcome {
+  metrics: RunMetrics;
+  feesUsd: string;
+  startingCashUsd: string;
+  endingEquityUsd: string;
+  /** Positions still open past the last decision + exit walk. */
+  stillOpen: number;
+}
+
 export interface RunReplayOptions {
   replayRunId: string;
+  /**
+   * Present = Mode B: recompute portfolio features from this run's own
+   * simulated fills and persist a replay_run_metrics row. Absent = Mode A
+   * (bit-for-bit re-execution from live snapshots).
+   */
+  simulatePortfolio?: SimulatePortfolioOptions;
 }
 
 export interface RunReplayTotals {
@@ -115,9 +161,13 @@ export interface RunReplayTotals {
   skippedNoSnapshot: number;
   /**
    * true when this run's rules label differs from (any of) the label(s) that
-   * produced the reused live decisions — see the Mode A/B note above runReplay.
+   * produced the reused live decisions AND the portfolio was NOT simulated —
+   * see the Mode A/B note above runReplay. Always false in Mode B: simulating
+   * the portfolio is exactly what makes a cross-label replay sound.
    */
   modeBUnsoundPortfolioFeatures: boolean;
+  /** Mode B only; null in Mode A. */
+  simulated: SimulatedPortfolioOutcome | null;
 }
 
 export async function runReplay(
@@ -174,7 +224,15 @@ export async function runReplay(
     .innerJoin(newsClusters, eq(newsClusters.id, llmSignals.clusterId))
     .innerJoin(instruments, eq(instruments.id, llmSignals.instrumentId))
     .where(
-      and(eq(llmSignals.scope, 'company'), isNotNull(llmSignals.instrumentId), ...windowFilters),
+      and(
+        eq(llmSignals.scope, 'company'),
+        isNotNull(llmSignals.instrumentId),
+        // Retrospective rows were interpreted with the news's outcome already
+        // in the price history; they are quarantined from the live decide
+        // queue for exactly that reason and must not enter replay P&L either.
+        eq(llmSignals.retrospective, false),
+        ...windowFilters,
+      ),
     )
     .orderBy(asc(llmSignals.analyzedAt), asc(llmSignals.id));
 
@@ -185,6 +243,7 @@ export async function runReplay(
     skips: 0,
     skippedNoSnapshot: 0,
     modeBUnsoundPortfolioFeatures: false,
+    simulated: null,
   };
   if (signals.length === 0) {
     logTotals(run.id, totals);
@@ -196,7 +255,23 @@ export async function runReplay(
     signals.map((signal) => signal.id),
   );
 
-  // Mode A/B check (see the module header): the reused live decisions may
+  if (options.simulatePortfolio !== undefined) {
+    await runWithSimulatedPortfolio(db, deps, {
+      run,
+      config,
+      signals,
+      liveBySignal,
+      totals,
+      startingCashUsd: options.simulatePortfolio.startingCashUsd ?? '100000.00',
+      ...(options.simulatePortfolio.slippageBps !== undefined
+        ? { slippageBps: options.simulatePortfolio.slippageBps }
+        : {}),
+    });
+    logTotals(run.id, totals);
+    return totals;
+  }
+
+  // Mode A check (see the module header): the reused live decisions may
   // have been produced under a DIFFERENT rules version than this replay run.
   const liveRulesVersionIds = new Set(
     [...liveBySignal.values()].map((live) => live.rulesVersionId),
@@ -309,6 +384,234 @@ export async function runReplay(
 
   logTotals(run.id, totals);
   return totals;
+}
+
+// ------------------------------------------------- Mode B (simulated book) --
+
+/** The signal slice the replay loop reads (matches runReplay's select). */
+interface ReplaySignalRow {
+  id: string;
+  clusterId: string;
+  instrumentId: string | null;
+  assetClass: 'us_equity' | 'crypto';
+  eventType: string;
+  direction: 'bullish' | 'bearish' | 'neutral';
+  expectedMoveBps: number;
+  horizon: 'intraday' | '1d' | '3d' | '5d';
+  alreadyExpected: boolean;
+  materiality: number;
+  confidence: number;
+  anchorTs: Date;
+}
+
+/**
+ * Mode B core: walk the live decisions in the order they were made, keeping a
+ * simulated portfolio (production fill model, exits walked over recorded bars
+ * between decisions). World features come from each decision's snapshot;
+ * portfolio features come from the ledger — see the module header.
+ *
+ * Determinism note: re-invoking the same run id recomputes the identical
+ * ledger (every input is stored), the decisions inserts all conflict
+ * (decided stays 0), and the metrics insert conflicts too — a rerun is a
+ * no-op, which is what makes it safe.
+ */
+async function runWithSimulatedPortfolio(
+  db: Db,
+  deps: ReplayDeps,
+  input: {
+    run: { id: string; rulesVersionId: string };
+    config: RulesConfig;
+    signals: ReplaySignalRow[];
+    liveBySignal: Map<string, LiveDecisionRow>;
+    totals: RunReplayTotals;
+    startingCashUsd: string;
+    slippageBps?: number;
+  },
+): Promise<void> {
+  const { run, config, totals } = input;
+  const ledger = new BacktestLedger({
+    startingCashUsd: input.startingCashUsd,
+    ...(input.slippageBps !== undefined ? { slippageBps: input.slippageBps } : {}),
+  });
+  const assetClassById = new Map<string, 'us_equity' | 'crypto'>();
+  for (const signal of input.signals) {
+    if (signal.instrumentId !== null) assetClassById.set(signal.instrumentId, signal.assetClass);
+  }
+
+  // Portfolio causality demands LIVE DECISION order, not analyzed_at order:
+  // the book at decision N is the product of decisions 1..N−1 as they were
+  // actually sequenced.
+  const pairs = input.signals
+    .flatMap((signal) => {
+      const live = input.liveBySignal.get(signal.id);
+      if (live === undefined) {
+        totals.skippedNoSnapshot += 1;
+        return [];
+      }
+      if (signal.instrumentId === null) return []; // unreachable: isNotNull filter
+      return [{ signal: { ...signal, instrumentId: signal.instrumentId }, live }];
+    })
+    .sort(
+      (a, b) =>
+        a.live.decidedAt.getTime() - b.live.decidedAt.getTime() ||
+        a.signal.id.localeCompare(b.signal.id),
+    );
+
+  for (const { signal, live } of pairs) {
+    // Advance the world to this instant BEFORE deciding, exactly as the
+    // backtest does: an exit that fired earlier must already have freed its
+    // position slot and returned its cash.
+    await settleExitsUpTo(db, ledger, assetClassById, config.exits, live.decidedAt);
+    const portfolio = await ledgerPortfolioFeatures(
+      db,
+      ledger,
+      signal.instrumentId,
+      live.decidedAt,
+    );
+
+    const decisionKey = `${signal.id}:${run.rulesVersionId}:${run.id}`;
+    const base = {
+      id: newId(),
+      decisionKey,
+      signalId: signal.id,
+      instrumentId: signal.instrumentId,
+      rulesVersionId: run.rulesVersionId,
+      replayRunId: run.id,
+      decidedAt: live.decidedAt,
+      suppressed: false,
+    };
+
+    // Even a verbatim no-quote skip gets THIS run's portfolio state stamped
+    // into its features — the row must describe what this run saw.
+    const features = withPortfolioFeatures(DecideFeatures.parse(live.features), portfolio);
+
+    let action: DecisionSlice['action'];
+    let inserted: { id: string }[];
+    if (live.skipReason === NO_QUOTE_SKIP_REASON) {
+      // No quote existed at decision time — a data fact, not a rules outcome.
+      action = live.action;
+      inserted = await db
+        .insert(decisions)
+        .values({
+          ...base,
+          action: live.action,
+          skipReason: live.skipReason,
+          gates: live.gates,
+          features,
+          quoteSnapshot: live.quoteSnapshot,
+          sizedQty: live.sizedQty,
+          sizedNotional: live.sizedNotional,
+        })
+        .onConflictDoNothing({ target: decisions.decisionKey })
+        .returning({ id: decisions.id });
+    } else {
+      const quote = QuoteSnapshot.parse(live.quoteSnapshot);
+      const signalInput = SignalInput.parse({
+        id: signal.id,
+        clusterId: signal.clusterId,
+        instrumentId: signal.instrumentId,
+        assetClass: signal.assetClass,
+        eventType: signal.eventType,
+        direction: signal.direction,
+        expectedMoveBps: signal.expectedMoveBps,
+        horizon: signal.horizon,
+        alreadyExpected: signal.alreadyExpected,
+        materiality: signal.materiality,
+        confidence: signal.confidence,
+        anchorTs: signal.anchorTs.toISOString(),
+      });
+      const result = deps.decide(signalInput, features, quote, config);
+      action = result.action;
+      inserted = await db
+        .insert(decisions)
+        .values({
+          ...base,
+          action: result.action,
+          skipReason: result.skipReason ?? null,
+          gates: result.gates,
+          features,
+          quoteSnapshot: quote,
+          sizedQty: result.sizedQty ?? null,
+          sizedNotional:
+            result.sizedNotional === undefined ? null : roundSizedNotional(result.sizedNotional),
+        })
+        .onConflictDoNothing({ target: decisions.decisionKey })
+        .returning({ id: decisions.id });
+
+      if (
+        (result.action === 'open_long' || result.action === 'open_short') &&
+        result.sizedQty !== undefined
+      ) {
+        // Fill regardless of insert conflict (see the determinism note): the
+        // ledger must replay the same trajectory on a rerun.
+        const intent = buildOrderIntent({
+          decisionKey,
+          instrumentId: signal.instrumentId,
+          assetClass: signal.assetClass,
+          action: result.action,
+          qty: result.sizedQty,
+        });
+        ledger.fillOpen({
+          intent,
+          referencePrice: quote.price,
+          at: live.decidedAt,
+          signalId: signal.id,
+          horizon: signal.horizon,
+          atrAtEntry: features.atr,
+        });
+      }
+    }
+
+    if (inserted.length === 0) continue; // rerun of the same replay run
+    totals.decided += 1;
+    if (action === 'skip') totals.skips += 1;
+    if (action === 'open_long' || action === 'open_short') totals.opens += 1;
+  }
+
+  // Walk whatever is still open past the last decision, so a late trade still
+  // meets its stop or time stop rather than vanishing from the metrics.
+  await settleExitsUpTo(db, ledger, assetClassById, config.exits, null);
+
+  const trades = ledger.trades();
+  const metrics = computeRunMetrics(trades, { startingCashUsd: input.startingCashUsd });
+  const outcome: SimulatedPortfolioOutcome = {
+    metrics,
+    feesUsd: ledger.totalFeesUsd(),
+    startingCashUsd: input.startingCashUsd,
+    endingEquityUsd: ledger.accountState(new Map()).equityUsd,
+    stillOpen: ledger.openPositions().length,
+  };
+  await persistRunMetrics(db, run.id, {
+    ...metrics,
+    feesUsd: outcome.feesUsd,
+    startingCashUsd: outcome.startingCashUsd,
+    endingEquityUsd: outcome.endingEquityUsd,
+    stillOpen: outcome.stillOpen,
+  });
+  totals.simulated = outcome;
+}
+
+/**
+ * The PORTFOLIO feature slice as this run's ledger sees it at `at`. Equity
+ * marks come from the same decision-time quote loader the live path uses; a
+ * position with no quote falls back to entry price inside the ledger.
+ */
+async function ledgerPortfolioFeatures(
+  db: Db,
+  ledger: BacktestLedger,
+  instrumentId: string,
+  at: Date,
+): Promise<PortfolioFeatures> {
+  const marks = new Map<string, string>();
+  for (const position of ledger.openPositions()) {
+    const quote = await loadDecisionQuote(db, position.instrumentId, at);
+    if (quote !== null) marks.set(position.instrumentId, quote.price);
+  }
+  return {
+    openPositionsCount: ledger.openPositions().length,
+    hasOpenPositionForInstrument: ledger.openPosition(instrumentId) !== undefined,
+    paperEquityUsd: ledger.accountState(marks).equityUsd,
+  };
 }
 
 // ----------------------------------------------------------------- compare --

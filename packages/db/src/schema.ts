@@ -377,6 +377,48 @@ export const scheduledEvents = pgTable(
  * Re-prompting with a new prompt_version INSERTS new rows — old signals are
  * never touched (that is how prompt versions are A/B-compared).
  */
+/**
+ * Fetched SEC filing text — the interpreter's article body for EDGAR items.
+ *
+ * One row per raw item, because an item's filing is fetched once and reused by
+ * every prompt version and every re-run. The stored text lives in the raw store
+ * (doc_ref) exactly like an ingest payload; only the bookkeeping is here.
+ *
+ * DELIBERATE MUTABLE EXCEPTION, mirroring llm_attempts: `attempts`,
+ * `last_error`, `status`, `doc_ref` and `fetched_at` are UPDATEd by the retry
+ * path. A fetch is not a fact about the world, it is our own bookkeeping about
+ * a fetch — the FACT is the stored document, which is append-only in the raw
+ * store under a deterministic key.
+ */
+export const itemDocuments = pgTable('item_documents', {
+  itemId: text('item_id')
+    .primaryKey()
+    .references(() => rawNewsItems.id),
+  /**
+   * 'ok'      text stored, doc_ref set
+   * 'empty'   the filing listed no content documents — permanent, not retried
+   * 'failed'  transport or format failure; retried until attempts hits the cap
+   */
+  status: text('status', { enum: ['ok', 'empty', 'failed'] }).notNull(),
+  /** Raw-store ref for the flattened filing text. Set iff status='ok'. */
+  docRef: text('doc_ref'),
+  charCount: bigint('char_count', { mode: 'number' }),
+  /** How many documents from the filing were kept (primary + exhibits). */
+  documentCount: bigint('document_count', { mode: 'number' }),
+  /** True when a per-document or total character cap trimmed something. */
+  truncated: boolean('truncated').notNull().default(false),
+  /**
+   * EDGAR_FETCHER_VERSION in force when this text was stored. A refetch that
+   * scopes on `truncated` alone never converges — a filing longer than the new
+   * cap is truncated again and re-queues forever — so staleness is defined as
+   * "stored under an older fetcher", which strictly decreases.
+   */
+  fetcherVersion: bigint('fetcher_version', { mode: 'number' }).notNull().default(1),
+  attempts: bigint('attempts', { mode: 'number' }).notNull().default(0),
+  lastError: text('last_error'),
+  fetchedAt: tz('fetched_at').notNull(),
+});
+
 export const llmSignals = pgTable(
   'llm_signals',
   {
@@ -408,6 +450,39 @@ export const llmSignals = pgTable(
     latencyMs: bigint('latency_ms', { mode: 'number' }),
     /** Popularity the LLM saw, frozen at analysis time. */
     clusterItemCountAtAnalysis: bigint('cluster_item_count_at_analysis', { mode: 'number' }),
+    /**
+     * True when the LLM ran over a deliberate backfill window rather than the
+     * live lookback. Retrospective rows are quarantined from the live decide
+     * path (loadUndecidedSignals filters them) and must be excluded from
+     * reliability/calibration stats — this column is the enforcement point for
+     * the single most invalidating trap in LLM-trading backtests (roadmap
+     * §3.6).
+     *
+     * Two hazards, deliberately not conflated. (1) Training contamination: for
+     * news older than the pinned model's knowledge cutoff the model may have
+     * read the outcome. Conditional and unmeasurable — a backfill of LAST WEEK
+     * carries none of it. (2) Prompt look-ahead, the concrete one: context is
+     * assembled from live tables, so a backfill would show the price move to
+     * today and the cluster's final item count. Prompt version v2 closes (2)
+     * by reconstructing every input at the observation lag; v1 rows still
+     * carry it, which is why the versions are never pooled.
+     */
+    retrospective: boolean('retrospective').notNull().default(false),
+    /**
+     * Which client produced the row. 'api' = Anthropic SDK + key: honours the
+     * prompt version's effort and max_tokens, and is replayable. 'cli' =
+     * dev-only Claude Code CLI on a subscription: it can set NEITHER, appends
+     * our system prompt to a harness prompt we do not version, and carries
+     * ~25.7k harness tokens per call (so cost_usd is inflated). 'cli' rows are
+     * NOT comparable to 'api' rows — exclude them from calibration and golden
+     * evals. They also carry a ':cli'-suffixed signal_key, so they never
+     * occupy the slot an 'api' call will want (signals-repo buildSignalKey).
+     */
+    transport: text('transport', { enum: ['api', 'cli'] })
+      .notNull()
+      .default('api'),
+    /** The LLM's own ≤2-sentence rationale — queryable for calibration review. */
+    reasoning: text('reasoning'),
     analyzedAt: tz('analyzed_at').notNull(),
   },
   (t) => [
@@ -416,6 +491,24 @@ export const llmSignals = pgTable(
     index('signals_instrument_idx').on(t.instrumentId),
   ],
 );
+
+/**
+ * Interpretation attempt tracker — poison-pill guard for the M2 sweep.
+ * A parse/validation failure writes NO llm_signals row (signals are facts);
+ * this table caps how often the sweep re-pays for the same failing call.
+ * Keyed by the SAME signal_key the successful row would carry, so a new
+ * prompt_version resets the budget (a new prompt may fix the poison).
+ * DELIBERATELY MUTABLE (attempts counter) — same documented exception class
+ * as ingest_watermarks and cluster popularity counters.
+ */
+export const llmAttempts = pgTable('llm_attempts', {
+  signalKey: text('signal_key').primaryKey(),
+  attempts: bigint('attempts', { mode: 'number' }).notNull(),
+  lastError: text('last_error').notNull(),
+  /** Raw store ref of the failing attempt's audit blob (request+response). */
+  auditRef: text('audit_ref'),
+  lastAttemptAt: tz('last_attempt_at').notNull(),
+});
 
 /**
  * Versioned deterministic-engine config. Immutable once referenced by any
@@ -448,6 +541,41 @@ export const replayRuns = pgTable('replay_runs', {
   signalsTo: tz('signals_to'),
   notes: text('notes'),
   createdAt: tz('created_at').notNull().defaultNow(),
+});
+
+/**
+ * Per-run trade metrics (M5) — the defined output of "compare rules v3 vs v7".
+ * One row per replay_runs row that simulated a portfolio (backtest mode, or
+ * replay Mode B); Mode A replays re-execute decisions from live snapshots and
+ * hold no trades, so they never get a row. Derived (computed from the run's
+ * ephemeral ledger at run end) and written conflict-do-nothing: re-running the
+ * same run id is a decisions-level no-op, so the original metrics stand.
+ * Percent/bps scalars are `real` (analytics); money sums stay numeric strings.
+ */
+export const replayRunMetrics = pgTable('replay_run_metrics', {
+  replayRunId: text('replay_run_id')
+    .primaryKey()
+    .references(() => replayRuns.id),
+  trades: bigint('trades', { mode: 'number' }).notNull(),
+  wins: bigint('wins', { mode: 'number' }).notNull(),
+  losses: bigint('losses', { mode: 'number' }).notNull(),
+  /** wins / trades; null with no trades. */
+  hitRate: real('hit_rate'),
+  /** Mean per-trade return on entry notional, bps. */
+  avgBpsPerTrade: real('avg_bps_per_trade'),
+  /** Gross wins / |gross losses|; null when the run had no losing trade. */
+  profitFactor: real('profit_factor'),
+  /** Max drawdown of the realized-equity curve, percent of running peak. */
+  maxDrawdownPct: real('max_drawdown_pct'),
+  /** Realized P&L over time-weighted average deployed capital, percent. */
+  exposureAdjustedReturnPct: real('exposure_adjusted_return_pct'),
+  realizedUsd: numeric('realized_usd', { precision: 18, scale: 2 }).notNull(),
+  feesUsd: numeric('fees_usd', { precision: 18, scale: 6 }).notNull(),
+  startingCashUsd: numeric('starting_cash_usd', { precision: 18, scale: 2 }).notNull(),
+  endingEquityUsd: numeric('ending_equity_usd', { precision: 18, scale: 2 }).notNull(),
+  /** Positions still open when the run's window ended (excluded from realized). */
+  stillOpen: bigint('still_open', { mode: 'number' }).notNull(),
+  computedAt: tz('computed_at').notNull().defaultNow(),
 });
 
 /**
