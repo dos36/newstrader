@@ -15,6 +15,9 @@ import { EIGHT_K_ITEM_HINTS, EVENT_TYPE_DEFINITIONS, EVENT_TYPES } from './taxon
  */
 const V1_SYSTEM_PROMPT_SHA256 = '66d12fc51daff4ba6dd6dcccd9ef5cb715b441ed713325ca4cf3a590dded58b6';
 const V3_SYSTEM_PROMPT_SHA256 = '9e8e6e8f934e309c2a1e41beca4a7b0f4c03d734eca4737ca762d2533d096056';
+const V3_NOFILING_SYSTEM_PROMPT_SHA256 =
+  'a338f7b585093f527e5cacd5860f7d99f5db42d1da448af8d4375f32458d6a69';
+const V4A_SYSTEM_PROMPT_SHA256 = 'f748cb1c139439a222006c588c54ef0f4fcd551af60dc453bc0356e3747690d6';
 
 const VALID_OUTPUT = {
   event_type: 'earnings_result',
@@ -228,6 +231,46 @@ describe('prompt registry', () => {
     const bodyChars = (rendered.match(/\u2588/g) ?? []).length;
     expect(bodyChars).toBe(60_000);
     expect(rendered).toContain('ITEM 4 [src_3');
+  });
+
+  it('pins the experiment arms and keeps their diffs from v3 narrow', () => {
+    const v3 = getPromptDefinition('v3');
+    const nofiling = getPromptDefinition('v3-nofiling');
+    const v4a = getPromptDefinition('v4a');
+
+    expect(createHash('sha256').update(nofiling.systemPrompt, 'utf8').digest('hex')).toBe(
+      V3_NOFILING_SYSTEM_PROMPT_SHA256,
+    );
+    expect(createHash('sha256').update(v4a.systemPrompt, 'utf8').digest('hex')).toBe(
+      V4A_SYSTEM_PROMPT_SHA256,
+    );
+
+    // v3-nofiling = v3 minus the filing bullet, minus the filing load.
+    expect(nofiling.includeFilingText).toBe(false);
+    expect(nofiling.systemPrompt).not.toContain('SEC filing text');
+    expect(nofiling.systemPrompt).toContain('move over the session BEFORE the story arrived');
+
+    // v4a = v3 plus the two qualified edits, filing input unchanged.
+    expect(v4a.includeFilingText).toBe(true);
+    expect(v4a.systemPrompt).toContain('SEC filing text');
+    expect(v4a.systemPrompt).toContain('Earnings and guidance stories');
+    expect(v4a.systemPrompt).toContain('Anchor to these bands');
+    expect(v3.systemPrompt).not.toContain('Earnings and guidance stories');
+    expect(v3.systemPrompt).toContain('Use the full scale honestly');
+    expect(v4a.systemPrompt).not.toContain('Use the full scale honestly');
+
+    // Experiment arms must never be the live version.
+    expect(CURRENT_PROMPT_VERSION).toBe('v3');
+  });
+
+  it('every registered version declares its filing-text input', () => {
+    for (const def of Object.values(PROMPT_REGISTRY)) {
+      expect(typeof def.includeFilingText).toBe('boolean');
+    }
+    // v1/v2/v3 describe pre-existing behavior: the sweep always loaded filing
+    // text for them (their size belts did the truncating).
+    expect(getPromptDefinition('v1').includeFilingText).toBe(true);
+    expect(getPromptDefinition('v3').includeFilingText).toBe(true);
   });
 
   it('current version exists, targets sonnet, and clears the prompt-cache minimum', () => {

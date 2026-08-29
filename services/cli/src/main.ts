@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +8,7 @@ import {
   DEFAULT_RULES_LABEL,
   decide,
   formatDec,
+  getPromptDefinition,
   mul,
   parseDec,
   roundTo,
@@ -600,6 +602,17 @@ program
   )
   .option('--dry-run', 'assemble candidates and print the first prompt; no API calls, no writes')
   .option(
+    '--prompt-version <v>',
+    'registry version to run (default: the current version). Experiment arms ' +
+      '(v3-nofiling, v4a, ...) live here; each version keys its own signal rows.',
+  )
+  .option(
+    '--pairs-file <path>',
+    'restrict the run to the clusterId:instrumentId pairs listed in this file ' +
+      '(one per line, # comments allowed) — the sampling hook for prompt ' +
+      'experiments. Requires a retrospective window (--backfill or --retrospective-*).',
+  )
+  .option(
     '--mode <api|cli>',
     "transport: 'api' = SDK + ANTHROPIC_API_KEY (the only production mode); " +
       "'cli' = the Claude Code CLI on your subscription, DEV-ONLY. Defaults to " +
@@ -621,6 +634,8 @@ program
       dryRun?: boolean;
       mode?: string;
       backfill?: boolean;
+      promptVersion?: string;
+      pairsFile?: string;
     }) => {
       const batch = parsePositiveInt(options.batch, '--batch');
       const lookbackHours = parsePositiveInt(options.lookbackHours, '--lookback-hours');
@@ -633,6 +648,16 @@ program
           : parseRetrospectiveWindow(options.retrospectiveFrom, options.retrospectiveTo);
       if (retrospective !== undefined && loopSeconds !== undefined) {
         throw new Error('interpret: a retrospective backfill is one-shot — drop --loop');
+      }
+      // Validate the version against the registry HERE so a typo fails before
+      // any window math or client construction, with the registered list shown.
+      if (options.promptVersion !== undefined) getPromptDefinition(options.promptVersion);
+      const samplePairs =
+        options.pairsFile === undefined ? undefined : readPairsFile(options.pairsFile);
+      if (samplePairs !== undefined && retrospective === undefined) {
+        throw new Error(
+          'interpret: --pairs-file is an experiment hook and requires a retrospective window — add --backfill or --retrospective-from/--retrospective-to',
+        );
       }
       const dailySpendCapUsd = parseSpendCapEnv();
       const mode = parseTransportMode(options.mode ?? process.env['LLM_TRANSPORT']);
@@ -686,6 +711,10 @@ program
                 countRemaining: options.backfill === true,
                 ...(retrospective !== undefined ? { retrospective } : {}),
                 ...(dailySpendCapUsd !== undefined ? { dailySpendCapUsd } : {}),
+                ...(options.promptVersion !== undefined
+                  ? { promptVersion: options.promptVersion }
+                  : {}),
+                ...(samplePairs !== undefined ? { samplePairs } : {}),
               },
             );
             if (dryRun) {
@@ -1443,6 +1472,30 @@ function parsePositiveInt(value: string, flag: string): number {
     throw new Error(`${flag} must be a positive integer, got "${value}"`);
   }
   return parsed;
+}
+
+/**
+ * A pairs file is one `clusterId:instrumentId` per line; blank lines and
+ * `#`-comment lines are skipped. Fails loudly on malformed lines — a silently
+ * dropped pair would make an experiment sample smaller than its design says.
+ */
+function readPairsFile(filePath: string): string[] {
+  const lines = readFileSync(filePath, 'utf8').split('\n');
+  const pairs: string[] = [];
+  for (const [index, raw] of lines.entries()) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith('#')) continue;
+    if (!/^[^:\s]+:[^:\s]+$/.test(line)) {
+      throw new Error(
+        `--pairs-file ${filePath}:${index + 1}: expected "clusterId:instrumentId", got "${line}"`,
+      );
+    }
+    pairs.push(line);
+  }
+  if (pairs.length === 0) {
+    throw new Error(`--pairs-file ${filePath}: no pairs found`);
+  }
+  return pairs;
 }
 
 function parseIsoDate(value: string, flag: string): Date {

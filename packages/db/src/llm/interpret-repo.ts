@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, lte, notExists, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, lte, notExists, sql, type SQL } from 'drizzle-orm';
 
 import type { Db } from '../client.js';
 import {
@@ -55,6 +55,18 @@ export interface LoadCandidatesOptions {
    * versa — deliberate: the two are not interchangeable rows.
    */
   transport: LlmTransport;
+  /**
+   * Restrict the queue to exactly these `${clusterId}:${instrumentId}` pairs —
+   * the sampling hook for prompt experiments (a stratified sample re-run under
+   * a new prompt version). Every other predicate (window, anti-join, attempts
+   * cap) still applies, so re-running a pairs file is idempotent per version.
+   */
+  pairKeys?: string[];
+}
+
+/** The `${clusterId}:${instrumentId}` expression pairKeys filters on. */
+function pairKeyExpr(): SQL<string> {
+  return sql<string>`${newsClusters.id} || ':' || ${instruments.id}`;
 }
 
 function signalKeyExpr(promptVersion: string, modelId: string, transport: LlmTransport) {
@@ -99,6 +111,7 @@ export async function loadInterpretationCandidates(
       and(
         gte(newsClusters.firstReceivedAt, options.from),
         lte(newsClusters.firstReceivedAt, options.to),
+        ...(options.pairKeys !== undefined ? [inArray(pairKeyExpr(), options.pairKeys)] : []),
         notExists(
           db
             .select({ one: sql`1` })
@@ -239,6 +252,7 @@ export async function countInterpretationCandidates(
         and(
           gte(newsClusters.firstReceivedAt, options.from),
           lte(newsClusters.firstReceivedAt, options.to),
+          ...(options.pairKeys !== undefined ? [inArray(pairKeyExpr(), options.pairKeys)] : []),
           notExists(
             db
               .select({ one: sql`1` })

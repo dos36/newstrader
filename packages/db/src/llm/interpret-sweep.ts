@@ -72,6 +72,12 @@ export interface InterpretSweepOptions {
    */
   retrospective?: { from: Date; to: Date };
   dailySpendCapUsd?: number;
+  /**
+   * Restrict the pass to exactly these `${clusterId}:${instrumentId}` pairs —
+   * the sampling hook for prompt experiments. Retrospective-only: a live sweep
+   * must never be silently narrowed to a sample.
+   */
+  samplePairs?: string[];
   /** Assemble candidates + first prompt, but no API calls and no writes. */
   dryRun?: boolean;
   /**
@@ -114,6 +120,12 @@ export async function interpretSweep(
   const capUsd = options?.dailySpendCapUsd ?? DEFAULT_DAILY_SPEND_CAP_USD;
   const isRetrospective = options?.retrospective !== undefined;
   const dryRun = options?.dryRun ?? false;
+  if (options?.samplePairs !== undefined && !isRetrospective) {
+    throw new Error(
+      'interpretSweep: samplePairs is an experiment hook and requires a retrospective window — ' +
+        'a live sweep must never be narrowed to a sample.',
+    );
+  }
 
   const result: InterpretSweepResult = {
     transport: deps.llm.transport,
@@ -174,6 +186,7 @@ export async function interpretSweep(
     batch,
     maxAttempts: MAX_ATTEMPTS,
     transport,
+    ...(options?.samplePairs !== undefined ? { pairKeys: options.samplePairs } : {}),
   });
   result.examined = candidates.length;
 
@@ -186,13 +199,14 @@ export async function interpretSweep(
       modelId: prompt.modelId,
       maxAttempts: MAX_ATTEMPTS,
       transport,
+      ...(options?.samplePairs !== undefined ? { pairKeys: options.samplePairs } : {}),
     });
   };
 
   if (dryRun) {
     const first = candidates[0];
     if (first !== undefined) {
-      const assembled = await assembleContext(db, deps, first, nowFn());
+      const assembled = await assembleContext(db, deps, first, nowFn(), prompt.includeFilingText);
       result.samplePrompt = prompt.buildUserPrompt(assembled.context);
     }
     // A dry run must report the real backlog, not 0 — it is the command an
@@ -210,7 +224,13 @@ export async function interpretSweep(
       break;
     }
 
-    const assembled = await assembleContext(db, deps, candidate, nowFn());
+    const assembled = await assembleContext(
+      db,
+      deps,
+      candidate,
+      nowFn(),
+      prompt.includeFilingText,
+    );
     const userPrompt = prompt.buildUserPrompt(assembled.context);
     const signalKey = buildSignalKey({
       clusterId: candidate.clusterId,
@@ -334,6 +354,7 @@ async function assembleContext(
   deps: InterpretSweepDeps,
   candidate: InterpretationCandidate,
   now: Date,
+  includeFilingText: boolean,
 ): Promise<AssembledContext> {
   const anchorMs = candidate.anchorTs.getTime();
   const observedAt = new Date(Math.min(anchorMs + INTERPRET_OBSERVATION_LAG_MS, now.getTime()));
@@ -349,11 +370,15 @@ async function assembleContext(
 
   // Fetched SEC filing text, when the document sweep has it. For an EDGAR item
   // this is the difference between ~57 characters of filing metadata and the
-  // actual 8-K body plus its press-release exhibits.
-  const filingRefs = await loadFilingDocumentRefs(
-    db,
-    itemRows.map((row) => row.itemId),
-  );
+  // actual 8-K body plus its press-release exhibits. Ablation arms
+  // (includeFilingText: false on the prompt definition) skip the load entirely
+  // and fall back to the Atom summary lede, exactly as a failed fetch would.
+  const filingRefs = includeFilingText
+    ? await loadFilingDocumentRefs(
+        db,
+        itemRows.map((row) => row.itemId),
+      )
+    : new Map<string, string>();
 
   const items = await Promise.all(
     itemRows.map(async (row) => {

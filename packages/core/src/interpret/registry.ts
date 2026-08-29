@@ -1,6 +1,8 @@
 import {
   buildSystemPromptV1,
   buildSystemPromptV3,
+  buildSystemPromptV3NoFiling,
+  buildSystemPromptV4a,
   buildUserPrompt,
   buildUserPromptV3,
   type InterpretContext,
@@ -47,6 +49,16 @@ export interface PromptDefinition {
    * cost of a generous cap is latency — see the client's request timeout.
    */
   maxTokens: number;
+  /**
+   * Whether the sweep loads fetched SEC filing bodies into this version's
+   * items. Part of the contract for the same reason the user-prompt builder
+   * is: it decides what the model sees. Added 2026-08-28 as a DESCRIPTION of
+   * behavior that already existed — the sweep loaded filing text
+   * unconditionally for every version, so `true` on v1/v2/v3 changes nothing
+   * about what their stored rows saw (v1/v2 then truncated it to 1,500 chars
+   * via their size belt). `false` exists for ablation arms.
+   */
+  includeFilingText: boolean;
 }
 
 /**
@@ -77,6 +89,7 @@ export const PROMPT_REGISTRY: Readonly<Record<string, PromptDefinition>> = {
     modelId: 'claude-sonnet-5',
     effort: 'medium',
     maxTokens: 1500,
+    includeFilingText: true,
   },
   /**
    * Identical system text to v1 — on purpose. What changed is the CONTEXT
@@ -97,6 +110,7 @@ export const PROMPT_REGISTRY: Readonly<Record<string, PromptDefinition>> = {
     modelId: 'claude-sonnet-5',
     effort: 'medium',
     maxTokens: 10_000,
+    includeFilingText: true,
   },
   /**
    * v3 — the first version built for measurement rather than for getting the
@@ -130,6 +144,52 @@ export const PROMPT_REGISTRY: Readonly<Record<string, PromptDefinition>> = {
     modelId: 'claude-sonnet-5',
     effort: 'medium',
     maxTokens: 10_000,
+    includeFilingText: true,
+  },
+  /**
+   * EXPERIMENT ARM — the 8-K filing-text ablation (2026-08-28 investigation).
+   * v3 minus the filing text: includeFilingText false stops the sweep loading
+   * filing bodies, and the system text drops the (now false) filing bullet.
+   * Everything else is byte-identical to v3. Run only via
+   * `interpret --prompt-version v3-nofiling --mode cli` on a pairs sample;
+   * never make this CURRENT_PROMPT_VERSION.
+   *
+   * Observational motivation: EDGAR-first clusters whose prompt provably
+   * lacked filing text produced 1 directional signal out of 154 (avg
+   * materiality 0.08); with filing text, 314 of 593. This arm measures the
+   * same contrast causally, paired on identical pairs.
+   */
+  'v3-nofiling': {
+    version: 'v3-nofiling',
+    systemPrompt: buildSystemPromptV3NoFiling(),
+    buildUserPrompt: buildUserPromptV3,
+    modelId: 'claude-sonnet-5',
+    effort: 'medium',
+    maxTokens: 10_000,
+    includeFilingText: false,
+  },
+  /**
+   * EXPERIMENT ARM — v4 candidate a (2026-08-28 investigation). v3 plus
+   * exactly two edits, each backed by a named tune-set failure pattern with
+   * ≥20 examples (see prompt.ts constants):
+   *
+   *   1. Earnings direction guidance — 147 earnings/guidance clusters scored
+   *      neutral, 58 of which moved ≥200bps abnormal at 1d ("mixed vs prior
+   *      year" hedging).
+   *   2. Confidence band anchors — v3's calibration curve was flat 46–60%
+   *      across deciles (ECE 0.124).
+   *
+   * Runs on the tune sample first; holdout once; promoted to `v4` (byte-copy)
+   * only if it passes the pre-registered criteria in the investigation memo.
+   */
+  v4a: {
+    version: 'v4a',
+    systemPrompt: buildSystemPromptV4a(),
+    buildUserPrompt: buildUserPromptV3,
+    modelId: 'claude-sonnet-5',
+    effort: 'medium',
+    maxTokens: 10_000,
+    includeFilingText: true,
   },
 };
 

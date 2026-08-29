@@ -807,6 +807,81 @@ describe.skipIf(!testDatabaseUrl)('interpretSweep (integration)', () => {
     expect(await db.select().from(llmSignals)).toHaveLength(0);
     expect(auditStore.blobs.size).toBe(0);
   });
+
+  it('samplePairs restricts a retrospective pass to the listed pairs only', async () => {
+    const instrumentId = await seedInstrument('VNDL');
+    const oldAnchor = new Date(NOW.getTime() - 5 * 24 * HOUR_MS);
+    await seedPair({ instrumentId, firstReceivedAt: oldAnchor, headline: 'not sampled' });
+    const sampled = await seedPair({
+      instrumentId,
+      firstReceivedAt: oldAnchor,
+      headline: 'sampled pair',
+    });
+    await seedPair({ instrumentId, firstReceivedAt: oldAnchor, headline: 'also not sampled' });
+    fake.queue.push(outcome());
+
+    const window = {
+      from: new Date(oldAnchor.getTime() - HOUR_MS),
+      to: new Date(oldAnchor.getTime() + HOUR_MS),
+    };
+    const result = await interpretSweep(db, deps(), {
+      retrospective: window,
+      samplePairs: [`${sampled.clusterId}:${instrumentId}`],
+      countRemaining: true,
+    });
+
+    // Only the listed pair is examined; the anti-join still applies within the
+    // sample, so the remaining count is 0 once its row is written.
+    expect(result).toMatchObject({ examined: 1, interpreted: 1, remaining: 0 });
+    const rows = await db.select().from(llmSignals);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.clusterId).toBe(sampled.clusterId);
+  });
+
+  it('refuses samplePairs on a live sweep — the hook is retrospective-only', async () => {
+    await expect(
+      interpretSweep(db, deps(), { samplePairs: ['a:b'] }),
+    ).rejects.toThrow(/retrospective/);
+  });
+
+  it('v3-nofiling never loads filing text — the 8-K ablation arm', async () => {
+    // Same seeding as the "prefers fetched SEC filing text" case, so the ONLY
+    // difference is the prompt version's includeFilingText flag.
+    const instrumentId = await seedInstrument('VNDL');
+    const { itemId } = await seedPair({
+      instrumentId,
+      sourceKind: 'sec_edgar',
+      meta: { itemCodes: ['2.02'], formType: '8-K' },
+      payload: { summary: { '#text': 'Item 2.02: Results of Operations' } },
+    });
+    const docRef = await payloadStore.put(`edgar-docs/${itemId}.json`, {
+      schemaVersion: 1,
+      text: '[form8-k.htm]\nItem 2.02. Q3 revenue of $412M, up 12% year over year.',
+    });
+    await db.insert(itemDocuments).values({
+      itemId,
+      status: 'ok',
+      docRef,
+      charCount: 70,
+      documentCount: 1,
+      truncated: false,
+      attempts: 1,
+      fetchedAt: NOW,
+    });
+    fake.queue.push(outcome());
+
+    await interpretSweep(db, deps(), { promptVersion: 'v3-nofiling' });
+
+    const request = fake.requests[0];
+    // The fetched body stays out; the Atom summary lede takes its place, and
+    // the system text does not promise filing text it will never carry.
+    expect(request?.userPrompt).not.toContain('Q3 revenue of $412M');
+    expect(request?.userPrompt).toContain('Item 2.02: Results of Operations');
+    expect(request?.systemPrompt).not.toContain('SEC filing text');
+
+    const rows = await db.select().from(llmSignals);
+    expect(rows[0]?.promptVersion).toBe('v3-nofiling');
+  });
 });
 
 // --------------------------------------------------------------- suite infra --

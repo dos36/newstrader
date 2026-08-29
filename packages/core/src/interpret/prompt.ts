@@ -72,6 +72,34 @@ const PRICE_BULLET_V3 =
 const FILING_TEXT_BULLET_V3 =
   '- SEC filing text: an EDGAR item may carry the filing body and its exhibits, each under a [filename] header (ex99-1.htm and similar are press releases, usually where the numbers are). Text may be truncated mid-sentence — that is a length cap, not a filing defect. When a filing carries no text beyond the form type and item codes, judge from those and lower confidence accordingly.';
 
+/**
+ * The confidence field contract, verbatim as v1–v3 shipped it. Extracted so a
+ * later version can replace the calibration language without touching the
+ * frozen versions — v1/v3 hash pins prove the extraction is byte-neutral.
+ */
+const CONFIDENCE_BULLET_V1 =
+  '- confidence: 0-1, your calibrated probability that the DIRECTION you chose is correct over the horizon. This is measured: across many signals where you say 0.8, the direction should be right about 80% of the time. Use the full scale honestly; 0.5 with direction neutral is a perfectly good answer for ambiguous news. Reserve ≥ 0.75 for cases where the causal link is direct and the surprise is unambiguous.';
+
+/**
+ * v4a change 2 — calibration bands. Measured motivation (tune set, anchors
+ * before 2026-08-07): v3's hit rate was FLAT 46–60% across confidence deciles
+ * (ECE 0.124, n=740 directional); the crowded 0.55-0.65 mid-range was no better
+ * than chance. The band anchors give the model concrete event classes per band
+ * instead of one 0.8 example, and forbid mid-range-as-hedge.
+ */
+const CONFIDENCE_BULLET_V4A =
+  '- confidence: 0-1, your calibrated probability that the DIRECTION you chose is correct over the horizon. This is measured: across many signals where you say 0.8, the direction should be right about 80% of the time. Anchor to these bands: 0.50-0.60 for a plausible but ordinary directional read (most real news lives here); 0.60-0.75 when the causal mechanism is direct and the surprise is clear; above 0.75 only for unambiguous shocks (fraud, bankruptcy, a failed trial, an agreed acquisition at a stated premium). Do not park in the middle as a hedge: if the direction is genuinely unclear, choose neutral instead — but when the evidence clearly leans one way, commit to a direction.';
+
+/**
+ * v4a change 1 — earnings direction guidance. Measured motivation (tune set):
+ * 147 earnings/guidance clusters were scored neutral; 58 of them moved ≥200bps
+ * abnormal at 1d (25 moved ≥437bps, the P90 of all pairs). The reasoning texts
+ * show the same shape each time: "mixed vs prior year" → neutral, while the
+ * market reacted to the guidance or headline-axis surprise.
+ */
+const EARNINGS_RULE_V4A =
+  '- Earnings and guidance stories: judge the surprise against what the market likely expected, not against the prior year — year-over-year comparisons are weak evidence, and the guidance axis usually dominates the reaction. A clear beat or miss on a headline axis (EPS, revenue, or guidance) is directional even when other axes are mixed; most "mixed" quarters still resolve directionally. Reserve neutral for genuinely offsetting axes of similar weight, and name the offsetting axes in reasoning.';
+
 export function buildSystemPromptV1(): string {
   return systemPrompt(PRICE_BULLET_V1, []);
 }
@@ -84,7 +112,33 @@ export function buildSystemPromptV3(): string {
   return systemPrompt(PRICE_BULLET_V3, [FILING_TEXT_BULLET_V3]);
 }
 
-function systemPrompt(priceBullet: string, extraContextBullets: string[]): string {
+/**
+ * v3-nofiling — the 8-K ablation arm: byte-identical to v3 except the filing
+ * text bullet is absent, because the sweep (via includeFilingText: false) will
+ * not load filing bodies for this version and the bullet would describe input
+ * that never arrives. Exists to measure what the fetched filing text is worth.
+ */
+export function buildSystemPromptV3NoFiling(): string {
+  return systemPrompt(PRICE_BULLET_V3, []);
+}
+
+/**
+ * v4a — v3 plus exactly the two edits the tune-set failure analysis qualified
+ * (each pattern has ≥20 tune examples; see the constants above). Everything
+ * else is byte-identical to v3 so a v3-vs-v4a delta isolates the edits.
+ */
+export function buildSystemPromptV4a(): string {
+  return systemPrompt(PRICE_BULLET_V3, [FILING_TEXT_BULLET_V3], CONFIDENCE_BULLET_V4A, [
+    EARNINGS_RULE_V4A,
+  ]);
+}
+
+function systemPrompt(
+  priceBullet: string,
+  extraContextBullets: string[],
+  confidenceBullet: string = CONFIDENCE_BULLET_V1,
+  extraJudgmentBullets: string[] = [],
+): string {
   return `You are the interpretation stage of a financial-news research system. The system ingests news, you convert each novel story into ONE structured signal, and a separate deterministic engine — not you — decides whether anything is traded (paper only). You never make trading decisions; you state what the news says. Your judgments are stored forever and measured against realized market outcomes, so calibration matters more than boldness.
 
 You will receive one news cluster (a deduplicated story, possibly reported by several sources) and one financial instrument the story was mechanically linked to. Emit exactly one JSON object matching the provided schema. Field contract:
@@ -95,7 +149,7 @@ You will receive one news cluster (a deduplicated story, possibly reported by se
 - horizon: when the move should be substantially realized. "intraday" for immediate mechanical repricing, "1d" for most material news, "3d"/"5d" only when the market will plausibly need days to digest (complex deals, regulatory cascades).
 - already_expected: true when the information was anticipated — a scheduled release (earnings on the expected date, a known FDA decision date), a confirmation of prior reporting, or a widely telegraphed outcome. True means "the market should have priced this"; the system separately checks a deterministic events calendar, and your judgment is graded against it.
 - materiality: 0-1, how much this matters to the company's value. 0.9+ existential (bankruptcy, fraud, transformative M&A); 0.5-0.8 clearly moves the business (earnings, guidance, major contracts); 0.1-0.4 routine; <0.1 noise, PR fluff, or not really about this company.
-- confidence: 0-1, your calibrated probability that the DIRECTION you chose is correct over the horizon. This is measured: across many signals where you say 0.8, the direction should be right about 80% of the time. Use the full scale honestly; 0.5 with direction neutral is a perfectly good answer for ambiguous news. Reserve ≥ 0.75 for cases where the causal link is direct and the surprise is unambiguous.
+${confidenceBullet}
 - reasoning: at most two sentences. State the mechanism ("X happened, which affects Y, so Z"), not a summary of the article.
 
 Event-type taxonomy (choose exactly one):
@@ -110,7 +164,7 @@ Hard rules:
 - Judge only from the provided material. Do not assume facts not present.
 - A headline-only cluster (no article text) is normal; interpret the headline, lower confidence accordingly.
 - Wire-service boilerplate, promotional pieces, and listicles are materiality ≤ 0.1, neutral.
-- Never let the linked instrument bias you into finding relevance that is not there — the "other"/neutral escape hatch exists exactly for mis-links.`;
+- Never let the linked instrument bias you into finding relevance that is not there — the "other"/neutral escape hatch exists exactly for mis-links.${extraJudgmentBullets.map((bullet) => `\n${bullet}`).join('')}`;
 }
 
 /** Everything the user prompt renders — assembled by the db-side sweep. */
