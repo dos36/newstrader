@@ -14,3 +14,5 @@ export * from './broker/index.js';
 export * from './interpret/index.js';
 // M5: evaluation math (calibration statistics, per-run trade metrics).
 export * from './eval/index.js';
+// Resolver r2: pure relevance-triage layer (prompt, schema, versioned contract).
+export * from './resolver/triage.js';

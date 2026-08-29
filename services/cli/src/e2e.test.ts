@@ -373,17 +373,24 @@ describe.skipIf(!testDatabaseUrl)('ingest e2e: fixtures → poll → process →
   });
 
   it('measures reactions end-to-end: poll → process → seeded bars → measure', async () => {
-    // M3 flow: the same ingest core produces the cluster + instrument link
-    // (source_hint 0.95 ≥ MIN_LINK_CONFIDENCE), then seeded minute bars around
-    // the anchor let measureReactions write the ladder + summary. The anchor
-    // is first_received_at = T0 (OUR clock) — publishedAt (T0 − 1h in the
-    // fixture) must play no role, which the assertions below pin via anchorTs.
+    // M3 flow: the same ingest core produces the cluster + instrument link,
+    // then seeded minute bars around the anchor let measureReactions write the
+    // ladder + summary. The link must clear MIN_LINK_CONFIDENCE without the
+    // r2 triage stage (no LLM in e2e), so the fixture carries in-text ticker
+    // evidence — "(NASDAQ: ACME)" → ticker_exact 0.9. A bare vendor tag would
+    // park at source_hint 0.65 and the measurer would correctly skip it.
+    // The anchor is first_received_at = T0 (OUR clock) — publishedAt (T0 − 1h
+    // in the fixture) must play no role, which the assertions pin via anchorTs.
     const acmeId = newId();
     await db
       .insert(instruments)
       .values({ id: acmeId, symbol: 'ACME', assetClass: 'us_equity', name: 'Acme Corp' });
 
-    const wire = new FakeAdapter('fake_wire', [STORY_A_WIRE]);
+    const prefixedStory: FetchedItem = {
+      ...STORY_A_WIRE,
+      headline: `${STORY_A_WIRE.headline} (NASDAQ: ACME)`,
+    };
+    const wire = new FakeAdapter('fake_wire', [prefixedStory]);
     const { deps } = fixtureWorld();
     await runPoll(deps, wire);
     const items = await loadUnclusteredItems(db, 500);

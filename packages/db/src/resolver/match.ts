@@ -12,7 +12,8 @@
  *      formType: the EDGAR adapter always sets itemCodes, while cik depends on
  *      a title regex — gating on cik alone would let a filing with an
  *      unparseable title fall through to the text scan.
- *   2. symbolsHint ∩ tickers      → source_hint  0.95  (vendor-tagged, e.g. Massive tickers[])
+ *   2. symbolsHint ∩ tickers      → source_hint  0.65  (vendor-tagged CANDIDATE — below the
+ *      interpretation gate since r2; promoted by the triage sweep via llm_ner 0.9)
  *   3. "NYSE: XYZ"-style prefix   → ticker_exact 0.9   (headline + body)
  *   4. "$XYZ" cashtags            → ticker_exact 0.85  (headline + body)
  *   5. alias scan, HEADLINE only  → alias_dict   0.7   (body prose is too noisy)
@@ -39,8 +40,19 @@
  * the r1 resolver never emits it.
  */
 
-/** Stamped on every item_instrument_links row this resolver writes. */
-export const RESOLVER_VERSION = 'r1';
+/**
+ * Stamped on every item_instrument_links row this resolver writes.
+ *
+ * r2 (2026-08-28): source_hint dropped from 0.95 to 0.65 — BELOW
+ * MIN_LINK_CONFIDENCE (0.75) — so a vendor tag alone no longer reaches the
+ * interpretation stage. Measured cause: 73% of r1 source_hint pairs were
+ * mis-links (vendors tag every mentioned ticker; one listicle fanned into up
+ * to 10 LLM calls). The triage sweep (triage-sweep.ts) now promotes the
+ * candidates an article is materially about via 'llm_ner' links at 0.9.
+ * Old r1 rows keep their 0.95 — history is append-only; consumers that must
+ * exclude them filter on resolver_version.
+ */
+export const RESOLVER_VERSION = 'r2';
 
 /** Methods the r1 resolver can emit — a subset of the schema's method enum. */
 export type ResolutionMethod = 'cik_exact' | 'ticker_exact' | 'source_hint' | 'alias_dict';
@@ -84,7 +96,14 @@ export interface ResolverDictionary {
 /** Per-method confidences, exported so tests and analytics share one source. */
 export const CONFIDENCE = {
   cikExact: 1.0,
-  sourceHint: 0.95,
+  /**
+   * r2: parked below MIN_LINK_CONFIDENCE on purpose (was 0.95 in r1). A
+   * vendor symbol tag is a CANDIDATE, not a verdict — the triage sweep
+   * promotes the article's actual subjects to 'llm_ner' links at 0.9. The
+   * link row is still written so triage has its candidate list and analytics
+   * keep the full tag fan-out.
+   */
+  sourceHint: 0.65,
   exchangePrefix: 0.9,
   cashtag: 0.85,
   cryptoKeyword: 0.8,

@@ -17,6 +17,9 @@ import {
 import type { RawStore, SourceAdapter } from '@newstrader/core';
 import {
   anthropicLlmClient,
+  anthropicTriageClient,
+  claudeCliTriageClient,
+  triageSweep,
   backfillEventWindows,
   runBacktest,
   claudeCliLlmClient,
@@ -57,6 +60,7 @@ import type {
   EnsureDailyBarsDeps,
   LlmClient,
   LlmTransport,
+  TriageLlmClient,
   MassiveBarsOptions,
   RecordSnapshotDeps,
   ResolveCursor,
@@ -307,6 +311,114 @@ program
       );
     });
   });
+
+program
+  .command('resolve:triage')
+  .option('--batch <n>', 'items per pass', '50')
+  .option('--until-empty', 'keep taking batches until no candidates remain')
+  .option('--from <iso>', 'received_at window start')
+  .option('--to <iso>', 'received_at window end')
+  .option('--item-ids-file <path>', 'restrict to these item ids (one per line, # comments)')
+  .option('--dry-run', 'assemble candidates and print the first prompt; no API calls, no writes')
+  .option(
+    '--mode <api|cli>',
+    "transport: 'api' = SDK + ANTHROPIC_API_KEY (the only production mode); " +
+      "'cli' = the Claude Code CLI on your subscription, DEV-ONLY. Defaults to " +
+      'LLM_TRANSPORT, else api.',
+  )
+  .description(
+    'Resolver r2 triage: one claude-haiku-4-5 call per vendor-tagged item, confirming which ' +
+      "source_hint candidates the article is materially about. Confirmed candidates get 'llm_ner' " +
+      'links (0.9, above the interpretation gate); every verdict lands in item_triage. Requires ' +
+      'ANTHROPIC_API_KEY (except --dry-run and --mode cli). Shares the kill switch and ' +
+      'LLM_DAILY_SPEND_USD_CAP with interpret.',
+  )
+  .action(
+    async (options: {
+      batch: string;
+      untilEmpty?: boolean;
+      from?: string;
+      to?: string;
+      itemIdsFile?: string;
+      dryRun?: boolean;
+      mode?: string;
+    }) => {
+      const batch = parsePositiveInt(options.batch, '--batch');
+      const dryRun = options.dryRun === true;
+      const from = options.from === undefined ? undefined : parseIsoDate(options.from, '--from');
+      const to = options.to === undefined ? undefined : parseIsoDate(options.to, '--to');
+      const itemIds =
+        options.itemIdsFile === undefined ? undefined : readIdsFile(options.itemIdsFile);
+      const dailySpendCapUsd = parseSpendCapEnv();
+      const mode = parseTransportMode(options.mode ?? process.env['LLM_TRANSPORT']);
+      if (mode === 'cli' && !dryRun) {
+        console.warn(
+          '[resolve:triage] mode=cli — DEV ONLY. item_triage rows are stamped transport=cli; ' +
+            'their cost_usd is inflated by the Claude Code harness prompt. Use --mode api ' +
+            'with ANTHROPIC_API_KEY for the deployed path.',
+        );
+      }
+      const llm: TriageLlmClient = dryRun
+        ? {
+            transport: mode,
+            triage: (): never => {
+              throw new Error('dry-run must never reach the LLM');
+            },
+          }
+        : mode === 'cli'
+          ? claudeCliTriageClient(process.env)
+          : anthropicTriageClient(process.env);
+
+      await withDb(async (db) => {
+        const store = new FsRawStore(
+          process.env['RAW_STORE_DIR'] ?? path.join(REPO_ROOT, 'data', 'raw'),
+        );
+        for (;;) {
+          const killSwitch = await cliKillSwitch();
+          const result = await triageSweep(
+            db,
+            { llm, auditStore: store, payloadStore: store, killSwitchHalted: killSwitch.halted },
+            {
+              batch,
+              dryRun,
+              ...(from !== undefined ? { from } : {}),
+              ...(to !== undefined ? { to } : {}),
+              ...(itemIds !== undefined ? { itemIds } : {}),
+              ...(dailySpendCapUsd !== undefined ? { dailySpendCapUsd } : {}),
+            },
+          );
+          if (dryRun) {
+            console.log(
+              result.samplePrompt === null
+                ? '[resolve:triage] dry run: no candidates'
+                : `\n----- first triage prompt -----\n${result.samplePrompt}\n-------------------------------`,
+            );
+          }
+          console.table([
+            {
+              examined: result.examined,
+              triaged: result.triaged,
+              'with relevant': result.withRelevant,
+              'links written': result.linksWritten,
+              failures: result.failures,
+              'spend cap hit': result.spendCapReached,
+              'spent today $': Number(result.spentTodayUsd.toFixed(4)),
+              'kill switch': result.halted ? 'HALTED' : 'run',
+              'transport error': result.transportError ?? '—',
+            },
+          ]);
+          const done =
+            dryRun ||
+            options.untilEmpty !== true ||
+            result.halted ||
+            result.spendCapReached ||
+            result.transportError !== null ||
+            result.examined === 0;
+          if (done) return;
+        }
+      });
+    },
+  );
 
 program
   .command('bars:record')
@@ -1496,6 +1608,16 @@ function readPairsFile(filePath: string): string[] {
     throw new Error(`--pairs-file ${filePath}: no pairs found`);
   }
   return pairs;
+}
+
+/** One id per line; blank lines and `#` comments skipped. Loud on empty. */
+function readIdsFile(filePath: string): string[] {
+  const ids = readFileSync(filePath, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'));
+  if (ids.length === 0) throw new Error(`--item-ids-file ${filePath}: no ids found`);
+  return ids;
 }
 
 function parseIsoDate(value: string, flag: string): Date {

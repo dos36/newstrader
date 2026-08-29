@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
 
-import { InterpretationSchema } from '@newstrader/core';
+import { InterpretationSchema, TriageResultSchema, type TriageResult } from '@newstrader/core';
 import { z } from 'zod';
 
 import type { LlmTransport } from '../shared-constants.js';
 import type { LlmCallOutcome, LlmCallRequest, LlmClient } from './anthropic-client.js';
 import type { LlmUsage } from './cost.js';
+import type { TriageCallOutcome, TriageCallRequest, TriageLlmClient } from './triage-client.js';
 
 /**
  * Second transport for the interpret stage: the Claude Code CLI, authenticated
@@ -130,87 +131,163 @@ export interface ClaudeCliClientOptions {
   env?: Record<string, string | undefined>;
 }
 
+/** Resolved spawn/parse config shared by every CLI-transport client. */
+interface CliCallConfig {
+  command: string;
+  runner: CliRunner;
+  timeoutMs: number;
+  maxParseRetries: number;
+  env: Record<string, string | undefined>;
+}
+
+/** The transport-independent slice of a structured CLI call. */
+interface CliStructuredRequest {
+  systemPrompt: string;
+  userPrompt: string;
+  modelId: string;
+  /** Recorded in contractDivergence — the CLI can apply neither. */
+  effortRequested: string | null;
+  maxTokensRequested: number | null;
+}
+
+interface CliStructuredOutcome<T> {
+  value: T | null;
+  failure: string | null;
+  stopReason: string | null;
+  usage: LlmUsage;
+  rawResponse: unknown;
+  latencyMs: number;
+}
+
+function resolveCliConfig(options: ClaudeCliClientOptions, clientName: string): CliCallConfig {
+  const env = options.env ?? process.env;
+  // Fail-closed against the deployed path: subscription auth is interactive,
+  // rate-limited for interactive use, and produces non-replayable rows.
+  // Lambda must never reach it, whatever the config says.
+  if (
+    env['AWS_LAMBDA_FUNCTION_NAME'] !== undefined ||
+    env['AWS_EXECUTION_ENV']?.startsWith('AWS_Lambda_') === true
+  ) {
+    throw new Error(
+      `${clientName} is dev-only and must never run in Lambda — ` +
+        'provision the ANTHROPIC_API_KEY parameter and use the API client.',
+    );
+  }
+  return {
+    command: options.command ?? 'claude',
+    runner: options.runner ?? spawnCliRunner,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    maxParseRetries: options.maxParseRetries ?? DEFAULT_PARSE_RETRIES,
+    env,
+  };
+}
+
 export class ClaudeCliLlmClient implements LlmClient {
   readonly transport: LlmTransport = 'cli';
 
-  private readonly command: string;
-  private readonly runner: CliRunner;
-  private readonly timeoutMs: number;
-  private readonly maxParseRetries: number;
-  private readonly env: Record<string, string | undefined>;
+  private readonly config: CliCallConfig;
 
   constructor(options: ClaudeCliClientOptions = {}) {
-    const env = options.env ?? process.env;
-    // Fail-closed against the deployed path: subscription auth is interactive,
-    // rate-limited for interactive use, and produces non-replayable rows.
-    // Lambda must never reach it, whatever the config says.
-    if (
-      env['AWS_LAMBDA_FUNCTION_NAME'] !== undefined ||
-      env['AWS_EXECUTION_ENV']?.startsWith('AWS_Lambda_') === true
-    ) {
-      throw new Error(
-        'ClaudeCliLlmClient is dev-only and must never run in Lambda — ' +
-          'provision the ANTHROPIC_API_KEY parameter and use the API client.',
-      );
-    }
-    this.command = options.command ?? 'claude';
-    this.runner = options.runner ?? spawnCliRunner;
-    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.maxParseRetries = options.maxParseRetries ?? DEFAULT_PARSE_RETRIES;
-    this.env = env;
+    this.config = resolveCliConfig(options, 'ClaudeCliLlmClient');
   }
 
   async interpret(request: LlmCallRequest): Promise<LlmCallOutcome> {
-    const startedAt = Date.now();
-    const attempts: unknown[] = [];
-    const usage: LlmUsage = {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationInputTokens: 0,
-      cacheReadInputTokens: 0,
+    const outcome = await runCliStructuredCall(
+      this.config,
+      {
+        systemPrompt: request.systemPrompt,
+        userPrompt: request.userPrompt,
+        modelId: request.modelId,
+        effortRequested: request.effort,
+        maxTokensRequested: request.maxTokens,
+      },
+      (json) => InterpretationSchema.safeParse(json),
+    );
+    return {
+      interpretation: outcome.value,
+      failure: outcome.failure,
+      stopReason: outcome.stopReason,
+      usage: outcome.usage,
+      rawResponse: outcome.rawResponse,
+      latencyMs: outcome.latencyMs,
     };
-    let lastFailure = 'no attempt recorded';
-    let lastStopReason: string | null = null;
+  }
+}
 
-    // Re-ask loop. Only a SCRAPE/SCHEMA miss retries: that is the gap left by
-    // having no structured-output enforcement, and a stray code fence should
-    // not burn one of the candidate's three sweep attempts. Everything else is
-    // terminal, exactly as in the API client — a refusal repeated is still a
-    // refusal, and transport problems throw straight out so the sweep aborts
-    // the pass without burning an attempt at all.
-    for (let attempt = 0; attempt <= this.maxParseRetries; attempt += 1) {
-      const stdin = attempt === 0 ? request.userPrompt : request.userPrompt + RETRY_NUDGE;
-      const envelope = await this.runOnce(request, stdin);
-      addUsage(usage, envelope);
-      lastStopReason = envelope.stop_reason ?? null;
-      attempts.push(projectEnvelope(envelope, request));
+/**
+ * CLI transport for the resolver-r2 triage stage — same subscription billing,
+ * same divergences (harness prompt, no structured-output enforcement, no
+ * max_tokens control) as the interpret CLI client, so item_triage rows are
+ * stamped transport='cli' and carry the same comparability caveat.
+ */
+export class ClaudeCliTriageClient implements TriageLlmClient {
+  readonly transport: LlmTransport = 'cli';
 
-      const contentFailure = classifyContentFailure(envelope);
-      if (contentFailure !== null) {
-        return {
-          interpretation: null,
-          failure: contentFailure,
-          stopReason: lastStopReason,
-          usage,
-          rawResponse: rawProjection(attempts, request),
-          latencyMs: Date.now() - startedAt,
-        };
-      }
+  private readonly config: CliCallConfig;
 
-      const text = envelope.result ?? '';
-      const json = extractJsonObject(text);
-      if (json === null) {
-        lastFailure = `no JSON object found in CLI result (${text.length} chars)`;
-        continue;
-      }
-      const validated = InterpretationSchema.safeParse(json);
-      if (!validated.success) {
-        lastFailure = `schema validation failed: ${validated.error.message.slice(0, 300)}`;
-        continue;
-      }
+  constructor(options: ClaudeCliClientOptions = {}) {
+    this.config = resolveCliConfig(options, 'ClaudeCliTriageClient');
+  }
+
+  async triage(request: TriageCallRequest): Promise<TriageCallOutcome> {
+    const outcome: CliStructuredOutcome<TriageResult> = await runCliStructuredCall(
+      this.config,
+      {
+        systemPrompt: request.systemPrompt,
+        userPrompt: request.userPrompt,
+        modelId: request.modelId,
+        effortRequested: null,
+        maxTokensRequested: request.maxTokens,
+      },
+      (json) => TriageResultSchema.safeParse(json),
+    );
+    return {
+      result: outcome.value,
+      failure: outcome.failure,
+      stopReason: outcome.stopReason,
+      usage: outcome.usage,
+      rawResponse: outcome.rawResponse,
+      latencyMs: outcome.latencyMs,
+    };
+  }
+}
+
+/**
+ * Shared re-ask loop. Only a SCRAPE/SCHEMA miss retries: that is the gap left
+ * by having no structured-output enforcement, and a stray code fence should
+ * not burn one of the candidate's sweep attempts. Everything else is terminal,
+ * exactly as in the API clients — a refusal repeated is still a refusal, and
+ * transport problems throw straight out so the sweep aborts the pass without
+ * burning an attempt at all.
+ */
+async function runCliStructuredCall<T>(
+  config: CliCallConfig,
+  request: CliStructuredRequest,
+  validate: (json: unknown) => { success: true; data: T } | { success: false; error: { message: string } },
+): Promise<CliStructuredOutcome<T>> {
+  const startedAt = Date.now();
+  const attempts: unknown[] = [];
+  const usage: LlmUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+  };
+  let lastFailure = 'no attempt recorded';
+  let lastStopReason: string | null = null;
+
+  for (let attempt = 0; attempt <= config.maxParseRetries; attempt += 1) {
+    const stdin = attempt === 0 ? request.userPrompt : request.userPrompt + RETRY_NUDGE;
+    const envelope = await runCliOnce(config, request, stdin);
+    addUsage(usage, envelope);
+    lastStopReason = envelope.stop_reason ?? null;
+    attempts.push(projectEnvelope(envelope, request));
+
+    const contentFailure = classifyContentFailure(envelope);
+    if (contentFailure !== null) {
       return {
-        interpretation: validated.data,
-        failure: null,
+        value: null,
+        failure: contentFailure,
         stopReason: lastStopReason,
         usage,
         rawResponse: rawProjection(attempts, request),
@@ -218,9 +295,20 @@ export class ClaudeCliLlmClient implements LlmClient {
       };
     }
 
+    const text = envelope.result ?? '';
+    const json = extractJsonObject(text);
+    if (json === null) {
+      lastFailure = `no JSON object found in CLI result (${text.length} chars)`;
+      continue;
+    }
+    const validated = validate(json);
+    if (!validated.success) {
+      lastFailure = `schema validation failed: ${validated.error.message.slice(0, 300)}`;
+      continue;
+    }
     return {
-      interpretation: null,
-      failure: lastFailure,
+      value: validated.data,
+      failure: null,
       stopReason: lastStopReason,
       usage,
       rawResponse: rawProjection(attempts, request),
@@ -228,71 +316,84 @@ export class ClaudeCliLlmClient implements LlmClient {
     };
   }
 
-  /** One spawn. Throws for transport problems, returns the parsed envelope otherwise. */
-  private async runOnce(request: LlmCallRequest, stdin: string): Promise<CliEnvelope> {
-    const args = [
-      '-p',
-      '--output-format',
-      'json',
-      '--model',
-      request.modelId,
-      '--max-turns',
-      '1',
-      // No tools and no MCP: the interpreter must read only the prompt. Without
-      // this the agent can hit the filesystem and the web mid-interpretation.
-      '--allowed-tools',
-      '',
-      '--strict-mcp-config',
-      '--mcp-config',
-      '{"mcpServers":{}}',
-      '--append-system-prompt',
-      request.systemPrompt + JSON_ONLY_INSTRUCTION,
-    ];
+  return {
+    value: null,
+    failure: lastFailure,
+    stopReason: lastStopReason,
+    usage,
+    rawResponse: rawProjection(attempts, request),
+    latencyMs: Date.now() - startedAt,
+  };
+}
 
-    let run: CliRunResult;
-    try {
-      run = await this.runner({
-        command: this.command,
-        args,
-        stdin,
-        timeoutMs: this.timeoutMs,
-        env: sanitizeEnv(this.env),
-      });
-    } catch (error) {
-      throw new Error(
-        `claude CLI spawn failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+/** One spawn. Throws for transport problems, returns the parsed envelope otherwise. */
+async function runCliOnce(
+  config: CliCallConfig,
+  request: CliStructuredRequest,
+  stdin: string,
+): Promise<CliEnvelope> {
+  const args = [
+    '-p',
+    '--output-format',
+    'json',
+    '--model',
+    request.modelId,
+    '--max-turns',
+    '1',
+    // No tools and no MCP: the interpreter must read only the prompt. Without
+    // this the agent can hit the filesystem and the web mid-interpretation.
+    '--allowed-tools',
+    '',
+    '--strict-mcp-config',
+    '--mcp-config',
+    '{"mcpServers":{}}',
+    '--append-system-prompt',
+    request.systemPrompt + JSON_ONLY_INSTRUCTION,
+  ];
 
-    if (run.timedOut) {
-      throw new Error(`claude CLI timed out after ${this.timeoutMs}ms`);
-    }
-
-    const trimmed = run.stdout.trim();
-    if (trimmed === '') {
-      throw new Error(
-        `claude CLI produced no output (exit ${String(run.code)}): ${run.stderr.slice(0, 300)}`,
-      );
-    }
-
-    let parsedJson: unknown;
-    try {
-      parsedJson = JSON.parse(trimmed);
-    } catch {
-      // Format drift, not a model mistake — throw rather than ingest partial data.
-      throw new Error(`claude CLI stdout was not JSON: ${trimmed.slice(0, 300)}`);
-    }
-    const envelope = CliEnvelopeSchema.safeParse(parsedJson);
-    if (!envelope.success) {
-      throw new Error(
-        `claude CLI envelope drifted from the expected shape: ${envelope.error.message.slice(0, 300)}`,
-      );
-    }
-
-    const transportFailure = classifyTransportFailure(envelope.data, run.code);
-    if (transportFailure !== null) throw new Error(transportFailure);
-    return envelope.data;
+  let run: CliRunResult;
+  try {
+    run = await config.runner({
+      command: config.command,
+      args,
+      stdin,
+      timeoutMs: config.timeoutMs,
+      env: sanitizeEnv(config.env),
+    });
+  } catch (error) {
+    throw new Error(
+      `claude CLI spawn failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
+
+  if (run.timedOut) {
+    throw new Error(`claude CLI timed out after ${config.timeoutMs}ms`);
+  }
+
+  const trimmed = run.stdout.trim();
+  if (trimmed === '') {
+    throw new Error(
+      `claude CLI produced no output (exit ${String(run.code)}): ${run.stderr.slice(0, 300)}`,
+    );
+  }
+
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(trimmed);
+  } catch {
+    // Format drift, not a model mistake — throw rather than ingest partial data.
+    throw new Error(`claude CLI stdout was not JSON: ${trimmed.slice(0, 300)}`);
+  }
+  const envelope = CliEnvelopeSchema.safeParse(parsedJson);
+  if (!envelope.success) {
+    throw new Error(
+      `claude CLI envelope drifted from the expected shape: ${envelope.error.message.slice(0, 300)}`,
+    );
+  }
+
+  const transportFailure = classifyTransportFailure(envelope.data, run.code);
+  if (transportFailure !== null) throw new Error(transportFailure);
+  return envelope.data;
 }
 
 /** Factory mirroring anthropicLlmClient(env). */
@@ -302,6 +403,19 @@ export function claudeCliLlmClient(
 ): ClaudeCliLlmClient {
   const command = env['CLAUDE_CLI_PATH']?.trim();
   return new ClaudeCliLlmClient({
+    ...options,
+    env,
+    ...(command !== undefined && command !== '' ? { command } : {}),
+  });
+}
+
+/** Factory mirroring anthropicTriageClient(env). */
+export function claudeCliTriageClient(
+  env: Record<string, string | undefined>,
+  options: Omit<ClaudeCliClientOptions, 'env'> = {},
+): ClaudeCliTriageClient {
+  const command = env['CLAUDE_CLI_PATH']?.trim();
+  return new ClaudeCliTriageClient({
     ...options,
     env,
     ...(command !== undefined && command !== '' ? { command } : {}),
@@ -390,7 +504,7 @@ function addUsage(usage: LlmUsage, envelope: CliEnvelope): void {
   usage.cacheReadInputTokens += u.cache_read_input_tokens ?? 0;
 }
 
-function projectEnvelope(envelope: CliEnvelope, request: LlmCallRequest): unknown {
+function projectEnvelope(envelope: CliEnvelope, request: CliStructuredRequest): unknown {
   return {
     sessionId: envelope.session_id ?? null,
     isError: envelope.is_error,
@@ -405,7 +519,7 @@ function projectEnvelope(envelope: CliEnvelope, request: LlmCallRequest): unknow
   };
 }
 
-function rawProjection(attempts: unknown[], request: LlmCallRequest): unknown {
+function rawProjection(attempts: unknown[], request: CliStructuredRequest): unknown {
   return {
     transport: 'cli',
     attempts,
@@ -414,9 +528,9 @@ function rawProjection(attempts: unknown[], request: LlmCallRequest): unknown {
      * row as comparable to an API row.
      */
     contractDivergence: {
-      effortRequested: request.effort,
+      effortRequested: request.effortRequested,
       effortApplied: null,
-      maxTokensRequested: request.maxTokens,
+      maxTokensRequested: request.maxTokensRequested,
       maxTokensApplied: null,
       systemPromptMode: 'appended-to-claude-code-harness-prompt',
       structuredOutput: 'none (scraped and re-validated locally)',

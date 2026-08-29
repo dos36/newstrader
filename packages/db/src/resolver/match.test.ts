@@ -71,8 +71,16 @@ const item = (over: Partial<ResolvableItem>): ResolvableItem => ({
 });
 
 describe('resolver constants', () => {
-  it('pins the r1 resolver version', () => {
-    expect(RESOLVER_VERSION).toBe('r1');
+  it('pins the r2 resolver version', () => {
+    expect(RESOLVER_VERSION).toBe('r2');
+  });
+
+  it('parks source_hint below the interpretation gate — the r2 change', () => {
+    // A vendor tag is a candidate, not a verdict: 73% of r1 source_hint pairs
+    // were mis-links. Promotion past MIN_LINK_CONFIDENCE (0.75) is the triage
+    // sweep's job (llm_ner at 0.9). If this rises back above the gate, every
+    // vendor-tagged listicle becomes interpretation spend again.
+    expect(CONFIDENCE.sourceHint).toBeLessThan(0.75);
   });
 });
 
@@ -123,7 +131,7 @@ describe('resolveItem: EDGAR / cik_exact', () => {
 });
 
 describe('resolveItem: source_hint', () => {
-  it('resolves vendor symbol hints at 0.95, ignoring unknown symbols', () => {
+  it('resolves vendor symbol hints at CONFIDENCE.sourceHint, ignoring unknown symbols', () => {
     const links = resolveItem(item({ symbolsHint: ['AAPL', 'ZZZZ'] }), dict);
     expect(links).toEqual([
       { instrumentId: ID.aapl, method: 'source_hint', confidence: CONFIDENCE.sourceHint },
@@ -319,13 +327,16 @@ describe('resolveItem: crypto keywords (0.8)', () => {
 });
 
 describe('resolveItem: dedupe and ordering', () => {
-  it('keeps the single highest-confidence method per instrument (hint beats prefix)', () => {
+  it('keeps the single highest-confidence method per instrument (prefix beats hint since r2)', () => {
+    // r1 had hint (0.95) beating prefix (0.9). r2 parks hints at 0.65, so a
+    // text-evidenced "NASDAQ: AAPL" now outranks the vendor tag — deliberately:
+    // the exchange-prefix form is deliberate authorship, the tag is not.
     const links = resolveItem(
       item({ headline: 'Results out (NASDAQ: AAPL)', symbolsHint: ['AAPL'] }),
       dict,
     );
     expect(links).toEqual([
-      { instrumentId: ID.aapl, method: 'source_hint', confidence: CONFIDENCE.sourceHint },
+      { instrumentId: ID.aapl, method: 'ticker_exact', confidence: CONFIDENCE.exchangePrefix },
     ]);
   });
 

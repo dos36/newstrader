@@ -511,6 +511,41 @@ export const llmAttempts = pgTable('llm_attempts', {
 });
 
 /**
+ * Relevance-triage verdicts — one row per (item × triage_version), the fact
+ * that the r2 triage stage examined a vendor-tagged item and which candidate
+ * tickers it confirmed. Confirmed candidates ALSO get item_instrument_links
+ * rows (method 'llm_ner'); this table exists so an item with ZERO relevant
+ * candidates leaves a record — without it the sweep would re-triage the same
+ * listicle forever. Append-only; a methodology change is a new triage_version.
+ */
+export const itemTriage = pgTable(
+  'item_triage',
+  {
+    itemId: text('item_id')
+      .notNull()
+      .references(() => rawNewsItems.id),
+    triageVersion: text('triage_version').notNull(),
+    modelId: text('model_id').notNull(),
+    transport: text('transport', { enum: ['api', 'cli'] }).notNull(),
+    /** How many source_hint candidates the call was shown. */
+    candidateCount: bigint('candidate_count', { mode: 'number' }).notNull(),
+    /** How many the model confirmed (0 is a normal verdict, not a failure). */
+    relevantCount: bigint('relevant_count', { mode: 'number' }).notNull(),
+    /** Confirmed symbols, post-intersection with the candidate list. */
+    relevantTickers: jsonb('relevant_tickers').$type<string[]>().notNull(),
+    /** Raw store ref of the audit blob (full prompt + response). */
+    auditRef: text('audit_ref').notNull(),
+    inputTokens: bigint('input_tokens', { mode: 'number' }).notNull(),
+    outputTokens: bigint('output_tokens', { mode: 'number' }).notNull(),
+    /** Measurement, not money — summed by the LLM spend breaker. */
+    costUsd: real('cost_usd').notNull(),
+    latencyMs: bigint('latency_ms', { mode: 'number' }).notNull(),
+    triagedAt: tz('triaged_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.itemId, t.triageVersion] })],
+);
+
+/**
  * Versioned deterministic-engine config. Immutable once referenced by any
  * decision: rule changes ship as NEW rows (config is data — architecture §3).
  */

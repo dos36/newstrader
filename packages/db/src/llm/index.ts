@@ -3,6 +3,7 @@
 export * from './cost.js';
 export * from './lede.js';
 export * from './anthropic-client.js';
+export * from './triage-client.js';
 export * from './cli-client.js';
 export * from './audit.js';
 export * from './interpret-repo.js';

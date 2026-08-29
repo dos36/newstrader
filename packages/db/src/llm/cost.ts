@@ -36,6 +36,13 @@ const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     cacheWriteUsdPerMTok: 3.75,
     cacheReadUsdPerMTok: 0.3,
   },
+  // Triage model (resolver r2 'llm_ner'). Verified 2026-08-28: $1/$5 per MTok.
+  'claude-haiku-4-5': {
+    inputUsdPerMTok: 1,
+    outputUsdPerMTok: 5,
+    cacheWriteUsdPerMTok: 1.25,
+    cacheReadUsdPerMTok: 0.1,
+  },
 };
 
 export function computeCostUsd(modelId: string, usage: LlmUsage): number {
