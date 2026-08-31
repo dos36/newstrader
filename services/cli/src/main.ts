@@ -8,6 +8,7 @@ import {
   DEFAULT_RULES_LABEL,
   decide,
   formatDec,
+  getMacroPromptDefinition,
   getPromptDefinition,
   mul,
   parseDec,
@@ -43,6 +44,7 @@ import {
   getReplayRunRulesLabel,
   getRulesVersion,
   interpretSweep,
+  macroInterpretSweep,
   LIVE_RUN,
   loadResolverDictionary,
   MEASURER_VERSION,
@@ -873,6 +875,127 @@ program
           console.log(`[interpret] sleeping ${loopSeconds}s (ctrl-c to stop)`);
           await sleep(loopSeconds * 1000);
         }
+      });
+    },
+  );
+
+program
+  .command('interpret:macro')
+  .option('--batch <n>', 'clusters per pass', '25')
+  .option('--lookback-hours <n>', 'live window over cluster first_received_at', '24')
+  .option(
+    '--retrospective-from <iso>',
+    'backfill window start — rows are stamped retrospective=true and NEVER reach the live decide queue',
+  )
+  .option('--retrospective-to <iso>', 'backfill window end (required with --retrospective-from)')
+  .option(
+    '--backfill',
+    'work the whole unlinked backlog oldest-first. Re-run the SAME command to keep going; ' +
+      'done when examined is 0.',
+  )
+  .option(
+    '--sources <list>',
+    "comma-separated news_sources.source_key values to scope the queue ('nyt' expands to " +
+      'every NYT feed plus the archive) — far cheaper than interpreting the whole unlinked ' +
+      'backlog to evaluate one source',
+  )
+  .option('--dry-run', 'assemble candidates and print the first prompt; no API calls, no writes')
+  .option('--prompt-version <v>', 'macro registry version (default: the current macro version)')
+  .description(
+    'MACRO interpretation: clusters carrying NO instrument link (the class `interpret` discards, ' +
+      "~87% of everything clustered) into llm_signals rows of scope 'macro' or 'sector'. One call " +
+      'per cluster; a broad judgment writes one row, a sector judgment one per named sector, and ' +
+      'a "no market mechanism" judgment writes none (the expected majority answer — read the ' +
+      '"no mechanism" count, not just rows written). Requires ANTHROPIC_API_KEY: the macro output ' +
+      'contract is api-only, since the cli transport does not implement it. Guarded by the kill ' +
+      'switch and LLM_DAILY_SPEND_USD_CAP (default $5/UTC-day), which it SHARES with `interpret`.',
+  )
+  .action(
+    async (options: {
+      batch: string;
+      lookbackHours: string;
+      retrospectiveFrom?: string;
+      retrospectiveTo?: string;
+      backfill?: boolean;
+      sources?: string;
+      dryRun?: boolean;
+      promptVersion?: string;
+    }) => {
+      const batch = parsePositiveInt(options.batch, '--batch');
+      const lookbackHours = parsePositiveInt(options.lookbackHours, '--lookback-hours');
+      const dryRun = options.dryRun === true;
+      const retrospective =
+        options.backfill === true
+          ? backfillWindow(options.retrospectiveFrom, options.retrospectiveTo, lookbackHours)
+          : parseRetrospectiveWindow(options.retrospectiveFrom, options.retrospectiveTo);
+      // Validated against the registry before any window math, so a typo fails
+      // with the registered list rather than after client construction.
+      if (options.promptVersion !== undefined) getMacroPromptDefinition(options.promptVersion);
+      const sources = expandSourceKeys(splitList(options.sources));
+      const dailySpendCapUsd = parseSpendCapEnv();
+
+      // Dry runs must work before any key exists. The stub throws on BOTH
+      // methods: the sweep checks for interpretMacro up front, so a stub
+      // missing it would fail the dry run with a misleading transport error.
+      const llm: LlmClient = dryRun
+        ? {
+            transport: 'api',
+            interpret: (): never => {
+              throw new Error('dry-run must never reach the LLM');
+            },
+            interpretMacro: (): never => {
+              throw new Error('dry-run must never reach the LLM');
+            },
+          }
+        : anthropicLlmClient(process.env);
+
+      await withDb(async (db) => {
+        const store = new FsRawStore(
+          process.env['RAW_STORE_DIR'] ?? path.join(REPO_ROOT, 'data', 'raw'),
+        );
+        const killSwitch = await cliKillSwitch();
+        const result = await macroInterpretSweep(
+          db,
+          {
+            llm,
+            auditStore: store,
+            payloadStore: store,
+            killSwitchHalted: killSwitch.halted,
+          },
+          {
+            batch,
+            lookbackHours,
+            dryRun,
+            ...(retrospective !== undefined ? { retrospective } : {}),
+            ...(dailySpendCapUsd !== undefined ? { dailySpendCapUsd } : {}),
+            ...(options.promptVersion !== undefined
+              ? { promptVersion: options.promptVersion }
+              : {}),
+            ...(sources !== undefined ? { sourceKeys: sources } : {}),
+          },
+        );
+        if (dryRun) {
+          console.log(
+            result.samplePrompt === null
+              ? '[interpret:macro] dry run: no unlinked candidates in the window'
+              : `\n----- first macro user prompt -----\n${result.samplePrompt}\n-----------------------------------`,
+          );
+        }
+        console.table([
+          {
+            mode: result.transport,
+            examined: result.examined,
+            interpreted: result.interpreted,
+            'rows written': result.rowsWritten,
+            'no mechanism': result.noMechanism,
+            duplicates: result.duplicates,
+            failures: result.failures,
+            'spend cap hit': result.spendCapReached,
+            'spent today $': Number(result.spentTodayUsd.toFixed(4)),
+            'kill switch': result.halted ? 'HALTED' : 'run',
+            'transport error': result.transportError ?? '—',
+          },
+        ]);
       });
     },
   );

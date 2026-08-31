@@ -1,0 +1,397 @@
+{
+    "copyright": "Copyright (c) 2026 The New York Times Company. All Rights Reserved.",
+    "response": {
+        "meta": {
+            "hits": 6,
+            "offset": 0,
+            "time": 1
+        },
+        "docs": [
+            {
+                "abstract": "At least 27 people were killed in drone and missile strikes on Kyiv that damaged several residential buildings across the city, the authorities said.",
+                "byline": {
+                    "original": "By Cassandra Vinograd and Marc Santora"
+                },
+                "document_type": "Article",
+                "headline": {
+                    "main": "Russia Bombards Ukrainian Capital With Deadly Wave of Attacks",
+                    "kicker": "",
+                    "print_headline": "Moscow Rains Revenge on Kyiv, Killing Dozens"
+                },
+                "_id": "nyt://article/551fd2bc-1318-5966-8382-006d58d0a4fe",
+                "keywords": null,
+                "multimedia": {
+                    "caption": "The site of a Russian attack on Kyiv on Thursday.",
+                    "credit": "Alina Smutko/Reuters",
+                    "default": {
+                        "url": "https://static01.nyt.com/images/2026/07/02/multimedia/02int-ukraine-attacks-ledeall-01-jhbt/02int-ukraine-attacks-ledeall-01-jhbt-articleLarge.jpg",
+                        "height": 400,
+                        "width": 600
+                    },
+                    "thumbnail": {
+                        "url": "https://static01.nyt.com/images/2026/07/02/multimedia/02int-ukraine-attacks-ledeall-01-jhbt/02int-ukraine-attacks-ledeall-01-jhbt-thumbStandard.jpg",
+                        "height": 75,
+                        "width": 75
+                    }
+                },
+                "news_desk": "Foreign",
+                "print_page": "1",
+                "print_section": "A",
+                "pub_date": "2026-07-02T08:21:37Z",
+                "section_name": "World",
+                "snippet": "",
+                "source": "The New York Times",
+                "subsection_name": "Europe",
+                "type_of_material": "Live Blog Post",
+                "uri": "nyt://article/551fd2bc-1318-5966-8382-006d58d0a4fe",
+                "web_url": "https://www.nytimes.com/live/2026/07/02/world/ukraine-kyiv-russia-attack/heres-the-latest",
+                "word_count": 850
+            },
+            {
+                "abstract": "More than 160 million people are under extreme heat warnings or heat advisories ahead of the Fourth of July weekend.",
+                "byline": {
+                    "original": "By Nazaneen Ghaffar, Erin McCann and Amy Graff"
+                },
+                "document_type": "Article",
+                "headline": {
+                    "main": "Heat Wave Spreads East on Wednesday, Putting Millions More at Risk",
+                    "kicker": "",
+                    "print_headline": ""
+                },
+                "_id": "nyt://article/bede243c-2356-5479-b547-0eff045283a1",
+                "keywords": [
+                    {
+                        "name": "Subject",
+                        "value": "Heat and Heat Waves",
+                        "rank": 1
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Heatstroke",
+                        "rank": 2
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Independence Day (US) (July 4)",
+                        "rank": 3
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Weather",
+                        "rank": 4
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Global Warming",
+                        "rank": 5
+                    },
+                    {
+                        "name": "Location",
+                        "value": "United States",
+                        "rank": 6
+                    },
+                    {
+                        "name": "Location",
+                        "value": "East Coast (US)",
+                        "rank": 7
+                    },
+                    {
+                        "name": "Location",
+                        "value": "Great Lakes",
+                        "rank": 8
+                    }
+                ],
+                "multimedia": {
+                    "caption": "",
+                    "credit": "Madison Swart for The New York Times",
+                    "default": {
+                        "url": "https://static01.nyt.com/images/2026/07/01/multimedia/01vid-US-heatwave-cover-pmlg/01vid-US-heatwave-cover-pmlg-articleLarge.jpg",
+                        "height": 400,
+                        "width": 600
+                    },
+                    "thumbnail": {
+                        "url": "https://static01.nyt.com/images/2026/07/01/multimedia/01vid-US-heatwave-cover-pmlg/01vid-US-heatwave-cover-pmlg-thumbStandard.jpg",
+                        "height": 75,
+                        "width": 75
+                    }
+                },
+                "news_desk": "Weather",
+                "print_page": "",
+                "print_section": "",
+                "pub_date": "2026-07-01T09:50:16Z",
+                "section_name": "Weather",
+                "snippet": "",
+                "source": "The New York Times",
+                "subsection_name": "",
+                "type_of_material": "News",
+                "uri": "nyt://article/bede243c-2356-5479-b547-0eff045283a1",
+                "web_url": "https://www.nytimes.com/2026/07/01/weather/fourth-of-july-heat-wave-latest-updates.html",
+                "word_count": 960
+            },
+            {
+                "abstract": "Two federal courts have blocked a new Trump administration rule that could have narrowed eligibility for a student loan forgiveness program for public servants.",
+                "byline": {
+                    "original": "By Tara Siegel Bernard"
+                },
+                "document_type": "Article",
+                "headline": {
+                    "main": "Judges Strike Down Trump Rule on Loan Forgiveness for Public Servants",
+                    "kicker": "",
+                    "print_headline": "Judges Block Student Loan Trump Policy On Forgiveness"
+                },
+                "_id": "nyt://article/0b1bd6a1-871a-5211-b8aa-b9539d5cca08",
+                "keywords": [
+                    {
+                        "name": "Subject",
+                        "value": "Student Loans",
+                        "rank": 1
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Personal Finances",
+                        "rank": 2
+                    },
+                    {
+                        "name": "Person",
+                        "value": "Trump, Donald J",
+                        "rank": 3
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Executive Orders and Memorandums",
+                        "rank": 4
+                    },
+                    {
+                        "name": "Organization",
+                        "value": "Education Department (US)",
+                        "rank": 5
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Government Employees",
+                        "rank": 6
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Federal Aid (US)",
+                        "rank": 7
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Federal Courts (US)",
+                        "rank": 8
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Decisions and Verdicts",
+                        "rank": 9
+                    },
+                    {
+                        "name": "Person",
+                        "value": "Ali, Amir H (Judge)",
+                        "rank": 10
+                    },
+                    {
+                        "name": "Person",
+                        "value": "Joun, Myong J",
+                        "rank": 11
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "First Amendment (US Constitution)",
+                        "rank": 12
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Public Defenders and Court-Appointed Lawyers (Criminal)",
+                        "rank": 13
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Nonprofit Organizations",
+                        "rank": 14
+                    }
+                ],
+                "multimedia": {
+                    "caption": "Many public servants have staked their financial futures on the loan forgiveness program. Being disqualified could have potentially upended their finances.",
+                    "credit": "Erin Schaff/The New York Times",
+                    "default": {
+                        "url": "https://static01.nyt.com/images/2026/06/30/multimedia/30Biz-PSLF-Ruling-mfch/30Biz-PSLF-Ruling-mfch-articleLarge.jpg",
+                        "height": 400,
+                        "width": 600
+                    },
+                    "thumbnail": {
+                        "url": "https://static01.nyt.com/images/2026/06/30/multimedia/30Biz-PSLF-Ruling-mfch/30Biz-PSLF-Ruling-mfch-thumbStandard.jpg",
+                        "height": 75,
+                        "width": 75
+                    }
+                },
+                "news_desk": "Business",
+                "print_page": "3",
+                "print_section": "B",
+                "pub_date": "2026-07-01T01:53:13Z",
+                "section_name": "Business",
+                "snippet": "",
+                "source": "The New York Times",
+                "subsection_name": "",
+                "type_of_material": "News",
+                "uri": "nyt://article/0b1bd6a1-871a-5211-b8aa-b9539d5cca08",
+                "web_url": "https://www.nytimes.com/2026/06/30/business/trump-student-loan-forgiveness.html",
+                "word_count": 465
+            },
+            {
+                "abstract": "New to soccer? You’re welcome here.",
+                "byline": {
+                    "original": "By Roger Bennett"
+                },
+                "document_type": "Article",
+                "headline": {
+                    "main": "How to World Cup",
+                    "kicker": "Guest Essay",
+                    "print_headline": "A Bluffer’s Guide to the World Cup"
+                },
+                "_id": "nyt://article/b46acf61-1de9-52dd-ad66-ac8cc9975a73",
+                "keywords": [
+                    {
+                        "name": "Subject",
+                        "value": "Soccer",
+                        "rank": 1
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "World Cup (Soccer)",
+                        "rank": 2
+                    }
+                ],
+                "multimedia": {
+                    "caption": "",
+                    "credit": "",
+                    "default": {
+                        "url": "https://static01.nyt.com/images/2026/07/01/opinion/01bennett-image/01bennett-image-articleLarge.jpg",
+                        "height": 600,
+                        "width": 600
+                    },
+                    "thumbnail": {
+                        "url": "https://static01.nyt.com/images/2026/07/01/opinion/01bennett-image/01bennett-image-thumbStandard.jpg",
+                        "height": 75,
+                        "width": 75
+                    }
+                },
+                "news_desk": "OpEd",
+                "print_page": "12",
+                "print_section": "SR",
+                "pub_date": "2026-07-01T05:00:09Z",
+                "section_name": "Opinion",
+                "snippet": "",
+                "source": "The New York Times",
+                "subsection_name": "",
+                "type_of_material": "Op-Ed",
+                "uri": "nyt://article/b46acf61-1de9-52dd-ad66-ac8cc9975a73",
+                "web_url": "https://www.nytimes.com/2026/07/01/opinion/world-cup-soccer-football.html",
+                "word_count": 1878
+            },
+            {
+                "abstract": "Jeffrey Martinovic bends the laws of crossword physics.",
+                "byline": {
+                    "original": "By Sam Corbin"
+                },
+                "document_type": "Article",
+                "headline": {
+                    "main": "Designation for a Potato",
+                    "kicker": "Wordplay, The Crossword Column",
+                    "print_headline": ""
+                },
+                "_id": "nyt://article/3dfaaf97-94ce-5fce-bfa5-6490edd510d4",
+                "keywords": [
+                    {
+                        "name": "Subject",
+                        "value": "Crossword Puzzles",
+                        "rank": 1
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Games",
+                        "rank": 2
+                    }
+                ],
+                "multimedia": {
+                    "caption": "If solving the Crossword is the extent of your productivity today, you’ll have done plenty.",
+                    "credit": "iStock",
+                    "default": {
+                        "url": "https://static01.nyt.com/images/2026/07/01/crosswords/01wordplay-spacetime-vqmw/01wordplay-spacetime-vqmw-articleLarge.jpg",
+                        "height": 414,
+                        "width": 600
+                    },
+                    "thumbnail": {
+                        "url": "https://static01.nyt.com/images/2026/07/01/crosswords/01wordplay-spacetime-vqmw/01wordplay-spacetime-vqmw-thumbStandard.jpg",
+                        "height": 75,
+                        "width": 75
+                    }
+                },
+                "news_desk": "Games",
+                "print_page": "",
+                "print_section": "",
+                "pub_date": "2026-07-01T02:00:05Z",
+                "section_name": "Gameplay",
+                "snippet": "",
+                "source": "The New York Times",
+                "subsection_name": "",
+                "type_of_material": "News",
+                "uri": "nyt://article/3dfaaf97-94ce-5fce-bfa5-6490edd510d4",
+                "web_url": "https://www.nytimes.com/2026/06/30/crosswords/daily-puzzle-2026-07-01.html",
+                "word_count": 791
+            },
+            {
+                "abstract": "",
+                "byline": {
+                    "original": "By Melissa Clark"
+                },
+                "document_type": "Article",
+                "headline": {
+                    "main": "These Hot Dogs Are Ridiculously Good",
+                    "kicker": "",
+                    "print_headline": ""
+                },
+                "_id": "nyt://article/6da8482e-ee38-5934-82a8-5ae31ee61285",
+                "keywords": [
+                    {
+                        "name": "Subject",
+                        "value": "Cooking and Cookbooks",
+                        "rank": 1
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Content Type: Service",
+                        "rank": 2
+                    }
+                ],
+                "multimedia": {
+                    "caption": "Tanya Sichynsky’s hot dogs with pico de gallo, adapted by Genevieve Ko.",
+                    "credit": "Christopher Simpson for The New York Times. Food Stylist: Simon Andrews. Prop Stylist: Paige Hicks.",
+                    "default": {
+                        "url": "https://static01.nyt.com/images/2021/05/24/dining/gk-hotdogs-copy/merlin_187538316_cfa51291-b8ea-4bfd-9455-18b9d906d9db-articleLarge.jpg",
+                        "height": 400,
+                        "width": 600
+                    },
+                    "thumbnail": {
+                        "url": "https://static01.nyt.com/images/2021/05/24/dining/gk-hotdogs-copy/gk-hotdogs-thumbStandard-v2.jpg",
+                        "height": 75,
+                        "width": 75
+                    }
+                },
+                "news_desk": "Dining",
+                "print_page": "",
+                "print_section": "",
+                "pub_date": "2026-07-01T15:00:13.099Z",
+                "section_name": "Food",
+                "snippet": "",
+                "source": "The New York Times",
+                "subsection_name": "",
+                "type_of_material": "Letter",
+                "uri": "nyt://article/6da8482e-ee38-5934-82a8-5ae31ee61285",
+                "web_url": "https://www.nytimes.com/2026/07/01/dining/these-hot-dogs-are-ridiculously-good.html",
+                "word_count": 573
+            }
+        ]
+    }
+}

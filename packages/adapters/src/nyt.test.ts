@@ -7,6 +7,7 @@ import type { FetchLike } from './http.js';
 import {
   DEFAULT_ARCHIVE_START_MONTH,
   formatMonth,
+  lastCompleteMonth,
   nextMonth,
   NYT_RSS_PRESETS,
   NytArchiveAdapter,
@@ -16,8 +17,24 @@ import {
 } from './nyt.js';
 import { RSS_PRESETS } from './rss.js';
 
+/**
+ * Two fixtures on purpose, guarding drift in both directions.
+ *
+ * `nyt-archive-2026-07.json` follows the PUBLISHED sample: populated `snippet`,
+ * a `lead_paragraph` on every doc, `word_count` as a string. None of that is
+ * true of the live API any more, but it is what NYT documents, so it is what a
+ * restored field would look like.
+ *
+ * `nyt-archive-live-2026-07.json` is trimmed from a REAL 2026-07 response
+ * (4,111 docs): `keywords: null`, `snippet` empty, no `lead_paragraph` key at
+ * all, and the real section labels. The first version of this adapter parsed
+ * the published shape and failed the whole month on the live one.
+ */
 const archiveSample: unknown = JSON.parse(
   readFileSync(new URL('./__fixtures__/nyt-archive-2026-07.json', import.meta.url), 'utf8'),
+);
+const liveSample: unknown = JSON.parse(
+  readFileSync(new URL('./__fixtures__/nyt-archive-live-2026-07.json', import.meta.url), 'utf8'),
 );
 
 interface Captured {
@@ -205,7 +222,10 @@ describe('NytArchiveAdapter', () => {
       expect(result.nextCursor).toBe('2026-07');
     });
 
-    it('defaults endMonth to the current month from the injected clock', async () => {
+    it('stops at the last COMPLETE month, never the month in progress', async () => {
+      // The archive 403s on the in-progress month (verified 2026-08-31: June
+      // returned 200, August 403). Defaulting to the current month therefore
+      // guaranteed a failed poll at the end of every walk.
       const capped = new NytArchiveAdapter({
         apiKey: 'k',
         startMonth: '2026-01',
@@ -213,11 +233,16 @@ describe('NytArchiveAdapter', () => {
         fetchImpl: stubFetch(archiveSample),
       });
 
-      expect((await capped.fetchSince('2026-02')).nextCursor).toBe('2026-03');
-      // 2026-04 is past the clock's month, so the walk stops.
-      const past = await capped.fetchSince('2026-03');
+      expect((await capped.fetchSince('2026-01')).nextCursor).toBe('2026-02');
+      // March is in progress, so the walk stops after February.
+      const past = await capped.fetchSince('2026-02');
       expect(past.items).toEqual([]);
-      expect(past.nextCursor).toBe('2026-03');
+      expect(past.nextCursor).toBe('2026-02');
+    });
+
+    it('rolls back across the year boundary in January', () => {
+      expect(lastCompleteMonth(new Date('2026-01-04T00:00:00Z'))).toBe('2025-12');
+      expect(lastCompleteMonth(new Date('2026-08-31T23:59:59Z'))).toBe('2026-07');
     });
   });
 
@@ -269,11 +294,61 @@ describe('NytArchiveAdapter', () => {
   });
 });
 
+describe('the live API shape (captured 2026-07)', () => {
+  it('parses keywords: null instead of failing the whole month', async () => {
+    // The bug this fixture exists for. 220 of 4,111 real docs carry
+    // `keywords: null`; an `optional()` array rejected them, and because the
+    // parse covers the entire month, one untagged article lost every article.
+    const { items } = await adapter({ fetchImpl: stubFetch(liveSample) }).fetchSince(null);
+    const live = items.find((i) => i.headline.startsWith('Russia Bombards'));
+    expect(live).toBeDefined();
+    expect(live?.meta?.['keywords']).toEqual([]);
+  });
+
+  it('keeps news and drops commentary, using the real section and material labels', async () => {
+    const { items } = await adapter({ fetchImpl: stubFetch(liveSample) }).fetchSince(null);
+
+    const kept = items.map((i) => i.headline);
+    // Weather is KEPT deliberately: a heat wave is a macro event with a
+    // transmission mechanism, which is the whole reason for this source.
+    expect(kept.some((h) => h.startsWith('Heat Wave Spreads East'))).toBe(true);
+    expect(kept.some((h) => h.startsWith('Judges Strike Down'))).toBe(true);
+    // An Op-Ed comments on an event that already arrived via its own item.
+    expect(kept.some((h) => h === 'How to World Cup')).toBe(false);
+    // Gameplay and a Food letter cannot carry a market event at all.
+    expect(kept.some((h) => h.startsWith('Designation for a Potato'))).toBe(false);
+    expect(kept.some((h) => h.startsWith('These Hot Dogs'))).toBe(false);
+  });
+
+  it('omits body when the live abstract is blank rather than emitting an empty string', async () => {
+    const { items } = await adapter({ fetchImpl: stubFetch(liveSample) }).fetchSince(null);
+    for (const item of items) {
+      expect(item.body === undefined || item.body.length > 0).toBe(true);
+    }
+  });
+
+  it('reads word_count as a number on live docs', async () => {
+    const { items } = await adapter({ fetchImpl: stubFetch(liveSample) }).fetchSince(null);
+    const heat = items.find((i) => i.headline.startsWith('Heat Wave'));
+    expect(typeof heat?.meta?.['wordCount']).toBe('number');
+  });
+
+  it('still refuses lead_paragraph when the field comes back', async () => {
+    // The live API dropped the field entirely; the published sample still has
+    // it. If NYT restores it, this must keep failing closed — otherwise
+    // backfill silently starts feeding richer text than live RSS can.
+    const { items } = await adapter({ fetchImpl: stubFetch(archiveSample) }).fetchSince(null);
+    for (const item of items) {
+      expect(item.body ?? '').not.toContain('WASHINGTON');
+    }
+  });
+});
+
 describe('nytArchiveAdapter factory', () => {
   it('reads env and honours the documented default start month', () => {
     const built = nytArchiveAdapter({ NYT_API_KEY: 'k' });
     expect(built.sourceKey).toBe('nyt_archive');
-    expect(DEFAULT_ARCHIVE_START_MONTH).toBe('2016-01');
+    expect(DEFAULT_ARCHIVE_START_MONTH).toBe('2026-07');
   });
 
   it('throws when NYT_API_KEY is absent', () => {

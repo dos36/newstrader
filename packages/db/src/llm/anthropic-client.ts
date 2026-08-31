@@ -1,6 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
-import { InterpretationSchema, type Interpretation } from '@newstrader/core';
+import {
+  InterpretationSchema,
+  macroCoherenceError,
+  MacroInterpretationSchema,
+  type Interpretation,
+  type MacroInterpretation,
+} from '@newstrader/core';
 
 import type { LlmTransport } from '../shared-constants.js';
 import type { LlmUsage } from './cost.js';
@@ -39,6 +45,17 @@ export interface LlmCallOutcome {
   latencyMs: number;
 }
 
+/** {@link LlmCallOutcome} for the macro contract. */
+export interface MacroLlmCallOutcome {
+  /** Validated AND coherence-checked judgment, or null on a content failure. */
+  interpretation: MacroInterpretation | null;
+  failure: string | null;
+  stopReason: string | null;
+  usage: LlmUsage;
+  rawResponse: unknown;
+  latencyMs: number;
+}
+
 export interface LlmClient {
   /**
    * How this client reaches the model. Read by the sweep to stamp
@@ -47,6 +64,13 @@ export interface LlmClient {
    */
   readonly transport: LlmTransport;
   interpret(request: LlmCallRequest): Promise<LlmCallOutcome>;
+  /**
+   * Optional on the interface so existing fakes and the dev CLI transport keep
+   * satisfying it without implementing a contract they do not need. The macro
+   * sweep checks for it and refuses to run against a client that lacks it,
+   * rather than silently interpreting nothing.
+   */
+  interpretMacro?(request: LlmCallRequest): Promise<MacroLlmCallOutcome>;
 }
 
 /**
@@ -86,6 +110,45 @@ export class AnthropicLlmClient implements LlmClient {
   }
 
   async interpret(request: LlmCallRequest): Promise<LlmCallOutcome> {
+    const outcome = await this.call(request, InterpretationSchema);
+    return { ...outcome, interpretation: outcome.parsed };
+  }
+
+  /**
+   * The MACRO variant — same transport, same caching, different output
+   * contract. Separate method rather than a schema parameter on
+   * {@link interpret} so each call site stays statically typed to the shape it
+   * actually gets back; a `schema` argument would hand every caller an
+   * `unknown` to narrow, and the first thing anyone does with that is cast.
+   */
+  async interpretMacro(request: LlmCallRequest): Promise<MacroLlmCallOutcome> {
+    const outcome = await this.call(request, MacroInterpretationSchema);
+    if (outcome.parsed === null) return { ...outcome, interpretation: null };
+    // Coherence is checked HERE, at the transport boundary, so an incoherent
+    // answer is a content failure exactly like a schema violation — one of
+    // three attempts, no row. The wire schema cannot express "this field is
+    // required only when that one has this value", so without this a
+    // structurally valid but self-contradicting judgment would persist.
+    const incoherent = macroCoherenceError(outcome.parsed);
+    if (incoherent !== null) {
+      return { ...outcome, interpretation: null, failure: `incoherent answer: ${incoherent}` };
+    }
+    return { ...outcome, interpretation: outcome.parsed };
+  }
+
+  /**
+   * Shared request/response handling for both output contracts.
+   *
+   * Everything that is a property of the TRANSPORT rather than of the schema
+   * lives here: prompt caching on the byte-stable system block, the usage
+   * projection, and the three stop-reason failure modes. Duplicating this per
+   * contract is how the two paths drift — one gains a failure check the other
+   * lacks, and the difference shows up as an unexplained gap in the audit log.
+   */
+  private async call<T>(
+    request: LlmCallRequest,
+    schema: { safeParse: (input: unknown) => { success: true; data: T } | { success: false; error: { message: string } } },
+  ): Promise<Omit<LlmCallOutcome, 'interpretation'> & { parsed: T | null }> {
     const startedAt = Date.now();
     const response = await this.client.messages.parse({
       model: request.modelId,
@@ -99,7 +162,7 @@ export class AnthropicLlmClient implements LlmClient {
       ],
       output_config: {
         effort: request.effort,
-        format: zodOutputFormat(InterpretationSchema),
+        format: zodOutputFormat(schema as never),
       },
       messages: [{ role: 'user', content: request.userPrompt }],
     });
@@ -121,32 +184,28 @@ export class AnthropicLlmClient implements LlmClient {
     const base = { stopReason: response.stop_reason, usage, rawResponse, latencyMs };
 
     if (response.stop_reason === 'refusal') {
-      return { ...base, interpretation: null, failure: 'safety refusal (stop_reason=refusal)' };
+      return { ...base, parsed: null, failure: 'safety refusal (stop_reason=refusal)' };
     }
     if (response.stop_reason === 'max_tokens') {
-      return {
-        ...base,
-        interpretation: null,
-        failure: 'output truncated (stop_reason=max_tokens)',
-      };
+      return { ...base, parsed: null, failure: 'output truncated (stop_reason=max_tokens)' };
     }
     if (response.parsed_output === null || response.parsed_output === undefined) {
       return {
         ...base,
-        interpretation: null,
+        parsed: null,
         failure: `structured output missing/unparsable (stop_reason=${String(response.stop_reason)})`,
       };
     }
 
-    const validated = InterpretationSchema.safeParse(response.parsed_output);
+    const validated = schema.safeParse(response.parsed_output);
     if (!validated.success) {
       return {
         ...base,
-        interpretation: null,
+        parsed: null,
         failure: `schema validation failed: ${validated.error.message.slice(0, 300)}`,
       };
     }
-    return { ...base, interpretation: validated.data, failure: null };
+    return { ...base, parsed: validated.data, failure: null };
   }
 }
 

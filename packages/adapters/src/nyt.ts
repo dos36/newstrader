@@ -38,12 +38,23 @@ type RssPreset = { sourceKey: string; feedUrl: string };
  * feed it appeared in (91 cross-feed articles, 0 differing), so it is one
  * canonical stored field, delivered whole.
  *
- * The Archive API also returns `snippet` and `lead_paragraph`. **We drop
+ * The published API sample also shows `snippet` and `lead_paragraph`. **We drop
  * `lead_paragraph` on purpose.** Feeding it to the interpreter would let a
  * backtest read richer text than the live path can ever get, which inflates
  * any measured edge — the exact failure the replay invariant exists to
- * prevent. `abstract` is the field that matches live; `snippet` is a fallback
- * because the API's own sample shows `abstract` can be null.
+ * prevent.
+ *
+ * As of a live capture of 2026-07 (4,111 docs) neither field is actually
+ * populated any more: `lead_paragraph` is absent from every doc and `snippet`
+ * is an empty string in all 4,111. The guard and the snippet fallback are kept
+ * regardless — they cost nothing and they are what stops a silent asymmetry if
+ * NYT restores either field.
+ *
+ * That same capture is the evidence the whole design rests on: archive
+ * abstracts run to a **median of 136 chars** (p10 65, p90 177, 93 empty)
+ * against **143 measured on live RSS**. Backfill and live therefore show the
+ * interpreter the same shape of input, which is what makes a backtest over
+ * this source honest.
  *
  * Article BODIES are not obtainable from either path and must not be attempted:
  * a body fetch returns 403 from DataDome bot protection, and robots.txt
@@ -139,7 +150,12 @@ const NytDoc = z
     document_type: z.string().nullish(),
     type_of_material: z.string().nullish(),
     word_count: z.union([z.number(), z.string()]).nullish(),
-    keywords: z.array(NytKeyword).optional(),
+    // `.nullish()`, not `.optional()`: the live API sends `keywords: null` on
+    // articles with no tags — 220 of 4,111 docs in the 2026-07 capture. An
+    // `optional()` array rejected those and failed the whole month, which is
+    // the defensive parser working as designed, and is why this is pinned to a
+    // real capture rather than to the published sample.
+    keywords: z.array(NytKeyword).nullish(),
     source: z.string().nullish(),
   })
   .passthrough();
@@ -157,13 +173,27 @@ const NytArchiveResponse = z
   .passthrough();
 
 /**
- * Sections dropped by default.
+ * Sections dropped by default. Matched case-insensitively on `section_name`.
  *
- * The user's ask is explicitly "analyze ALL news" — a Nepal flood is wanted,
- * because disasters in developed economies move insurers, reinsurers, and
- * supply chains. So this is an EXCLUDE list, not an include list: everything
- * survives unless it is structurally incapable of carrying market information.
- * Matched case-insensitively against `section_name`.
+ * This is an EXCLUDE list, not an include list, and that is the point: the goal
+ * is to analyse ALL news, because an event with no company in it still moves
+ * markets through a mechanism (weather through utilities and insurers, a border
+ * closure through shipping). Everything therefore survives unless its section
+ * structurally cannot carry a new event. Deciding WHICH names are affected is
+ * the interpreter's job, not this filter's.
+ *
+ * Names pinned to a live capture of 2026-07 (4,111 docs) — the published sample
+ * uses different labels ('Business Day' vs the real 'Business', 'Crosswords &
+ * Games' vs 'Gameplay'), so a list written from the docs would have silently
+ * matched nothing.
+ *
+ * Two judgement calls worth seeing, both from reading real headlines:
+ *   - **Weather stays.** Its July docs include "Heat Wave Spreads East ...
+ *     Putting Millions More at Risk" and "Tracking Tropical Storm Bavi" —
+ *     precisely the macro events this source was added for.
+ *   - **Briefing and Polls go.** "Today, In Short" is a digest of news that
+ *     already arrived through its own items, and "Toplines: Times/Siena Polls"
+ *     is a data dump, not an event.
  */
 export const NYT_EXCLUDED_SECTIONS: readonly string[] = [
   'Sports',
@@ -171,13 +201,15 @@ export const NYT_EXCLUDED_SECTIONS: readonly string[] = [
   'Movies',
   'Theater',
   'Music',
+  'Dance',
   'Books',
   'Style',
-  'Fashion & Style',
   'Food',
   'Travel',
-  'Games',
-  'Crosswords & Games',
+  'Gameplay',
+  'Podcasts',
+  'Briefing',
+  'Polls',
   'Obituaries',
   'Corrections',
   'The Learning Network',
@@ -189,6 +221,36 @@ export const NYT_EXCLUDED_SECTIONS: readonly string[] = [
   'Magazine',
   'T Magazine',
   'Real Estate',
+  'Crosswords & Games',
+  'Fashion & Style',
+];
+
+/**
+ * `type_of_material` values dropped by default, case-insensitive.
+ *
+ * A cleaner cut than section for one specific thing: removing COMMENTARY. An
+ * Op-Ed, editorial, letter, or review discusses an event that already reached
+ * us through its own item, so interpreting it double-counts one story and pays
+ * twice for it. In the 2026-07 capture this removes 220 Op-Eds, 145 interactive
+ * features, 122 reviews, 84 obituaries, 56 letters, and 55 briefings while
+ * leaving all 3,229 'News' docs and both News Analysis and Live Blog Post
+ * intact. Note the API's own casing is inconsistent ('briefing' lowercase,
+ * 'Op-Ed' hyphenated), which is why matching is case-folded.
+ */
+export const NYT_EXCLUDED_MATERIAL_TYPES: readonly string[] = [
+  'Op-Ed',
+  'Editorial',
+  'Letter',
+  'Review',
+  'Obituary (Obit)',
+  'briefing',
+  'Quote',
+  'NYT Cooking',
+  'Correction',
+  'Interactive Feature',
+  'Recipe',
+  'Slideshow',
+  'Video',
 ];
 
 /**
@@ -208,24 +270,38 @@ export interface NytArchiveAdapterConfig {
    */
   startMonth?: string | undefined;
   /**
-   * Last month to backfill, `YYYY-MM` inclusive. Defaults to the month of
-   * `now()`. A sweep that reaches past this returns zero items and holds its
-   * cursor, so a scheduled poller cannot spin.
+   * Last month to backfill, `YYYY-MM` inclusive. Defaults to the last COMPLETE
+   * month before `now()` — see {@link lastCompleteMonth}. A sweep that reaches
+   * past this returns zero items and holds its cursor, so a scheduled poller
+   * cannot spin.
    */
   endMonth?: string | undefined;
   excludedSections?: readonly string[] | undefined;
   excludedDocumentTypes?: readonly string[] | undefined;
+  excludedMaterialTypes?: readonly string[] | undefined;
   /** Injectable for tests; the adapter is otherwise clock-free. */
   now?: (() => Date) | undefined;
   fetchImpl?: FetchLike | undefined;
 }
 
 /**
- * Default backfill start. 2016-01 is not arbitrary: it is where Massive's own
- * news archive begins, so a shared window makes NYT-vs-Massive source
- * comparisons possible without one side having a head start.
+ * Default backfill start, chosen to match the data the rest of the system
+ * actually holds rather than the depth the API offers.
+ *
+ * The archive reaches 1851 and it is tempting to take all of it. That would be
+ * waste: a news item is only useful once it can be MEASURED, which needs price
+ * bars for the reaction window, and only comparable once a competing source
+ * covered the same day. Every other source in this repo begins 2026-07-10/11
+ * (verified against `raw_news_items` on 2026-08-31: edgar_form4, globenewswire,
+ * edgar_8k, massive_news, and the crypto feeds all start that week), and the
+ * locked tune/holdout split sits inside that window at 2026-08-07. Months
+ * before it would ingest tens of thousands of rows that no evaluation can score
+ * and no source comparison can use.
+ *
+ * Raise the window deliberately — with `NYT_ARCHIVE_START` — once bars and a
+ * second source cover the earlier period.
  */
-export const DEFAULT_ARCHIVE_START_MONTH = '2016-01';
+export const DEFAULT_ARCHIVE_START_MONTH = '2026-07';
 
 const MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
 
@@ -257,8 +333,23 @@ function monthIsAfter(a: string, b: string): boolean {
   return a > b;
 }
 
-function currentMonth(now: Date): string {
-  return formatMonth(now.getUTCFullYear(), now.getUTCMonth() + 1);
+/**
+ * The newest month the Archive API will actually serve: the last COMPLETE one.
+ *
+ * Verified 2026-08-31 — `/2026/6.json` returns 200 while `/2026/8.json`, the
+ * month in progress, returns **403**. Not a rate limit and not an auth problem:
+ * the same key served June seconds earlier. The archive simply does not publish
+ * a month until it closes, and it says so with a status code that looks exactly
+ * like a bad key, which is worth knowing before anyone debugs their credentials
+ * over it.
+ *
+ * The practical consequence: the current month is reachable only through the
+ * live RSS feeds, so a backfill can never be fully current.
+ */
+export function lastCompleteMonth(now: Date): string {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth() + 1;
+  return month === 1 ? formatMonth(year - 1, 12) : formatMonth(year, month - 1);
 }
 
 /**
@@ -295,6 +386,7 @@ export class NytArchiveAdapter implements SourceAdapter {
   private readonly endMonth: string | undefined;
   private readonly excludedSections: ReadonlySet<string>;
   private readonly excludedDocumentTypes: ReadonlySet<string>;
+  private readonly excludedMaterialTypes: ReadonlySet<string>;
   private readonly now: () => Date;
   private readonly fetchImpl: FetchLike;
 
@@ -320,13 +412,16 @@ export class NytArchiveAdapter implements SourceAdapter {
     this.excludedDocumentTypes = new Set(
       (config.excludedDocumentTypes ?? NYT_EXCLUDED_DOCUMENT_TYPES).map((s) => s.toLowerCase()),
     );
+    this.excludedMaterialTypes = new Set(
+      (config.excludedMaterialTypes ?? NYT_EXCLUDED_MATERIAL_TYPES).map((s) => s.toLowerCase()),
+    );
     this.now = config.now ?? ((): Date => new Date());
     this.fetchImpl = config.fetchImpl ?? defaultFetch;
   }
 
   async fetchSince(cursor: string | null): Promise<FetchResult> {
     const month = cursor === null ? this.startMonth : nextMonth(cursor);
-    const last = this.endMonth ?? currentMonth(this.now());
+    const last = this.endMonth ?? lastCompleteMonth(this.now());
 
     if (monthIsAfter(month, last)) {
       // Walk complete. Hold the cursor so a rerun is a no-op, not a restart.
@@ -369,6 +464,8 @@ export class NytArchiveAdapter implements SourceAdapter {
     if (this.excludedSections.has(section.toLowerCase())) return undefined;
     const documentType = doc.document_type ?? '';
     if (this.excludedDocumentTypes.has(documentType.toLowerCase())) return undefined;
+    const materialType = doc.type_of_material ?? '';
+    if (this.excludedMaterialTypes.has(materialType.toLowerCase())) return undefined;
 
     const headline = doc.headline?.main?.trim();
     if (headline === undefined || headline.length === 0) return undefined;

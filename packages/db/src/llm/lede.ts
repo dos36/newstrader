@@ -78,7 +78,16 @@ export function extractLede(sourceKind: string, payload: unknown): string | null
       raw = textish(field(payload, 'summary'));
       break;
     case 'newsapi':
-      raw = textish(field(payload, 'description'));
+      // `description` is Massive's field. `abstract` is the NYT Archive API's,
+      // and it is the ONLY text that source carries — without this fallback
+      // every backfilled NYT item reaches the prompt headline-only, which looks
+      // exactly like a source that publishes no text rather than a field-name
+      // mismatch on our side. `snippet` is listed for completeness: the
+      // published NYT sample populates it, though live responses do not.
+      raw =
+        textish(field(payload, 'description')) ??
+        textish(field(payload, 'abstract')) ??
+        textish(field(payload, 'snippet'));
       break;
     case 'rss':
       raw = textish(field(payload, 'description')) ?? textish(field(payload, 'summary'));

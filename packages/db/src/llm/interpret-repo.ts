@@ -292,16 +292,30 @@ export async function sumLlmSpendSince(db: Db, since: Date): Promise<number> {
  * and audit ref win. This is one of the schema's documented mutable
  * exceptions; transport errors must NOT be recorded here (they are not the
  * candidate's fault and the cap would starve healthy pairs during an outage).
+ *
+ * `attempts` overrides the increment with an absolute value, for an outcome
+ * that is TERMINAL on the first call rather than worth retrying. The macro
+ * sweep needs it: a `market_scope: 'none'` judgment is a correct answer that
+ * writes no signal row, so nothing else marks it done, and an incrementing
+ * counter would re-ask and re-pay for the same story twice more before the cap
+ * caught it. Retrying a settled answer costs money and changes nothing.
  */
 export async function recordAttemptFailure(
   db: Db,
-  input: { signalKey: string; error: string; auditRef: string | null; at: Date },
+  input: {
+    signalKey: string;
+    error: string;
+    auditRef: string | null;
+    at: Date;
+    attempts?: number;
+  },
 ): Promise<void> {
+  const terminal = input.attempts;
   await db
     .insert(llmAttempts)
     .values({
       signalKey: input.signalKey,
-      attempts: 1,
+      attempts: terminal ?? 1,
       lastError: input.error,
       auditRef: input.auditRef,
       lastAttemptAt: input.at,
@@ -309,7 +323,8 @@ export async function recordAttemptFailure(
     .onConflictDoUpdate({
       target: llmAttempts.signalKey,
       set: {
-        attempts: sql`${llmAttempts.attempts} + 1`,
+        attempts:
+          terminal === undefined ? sql`${llmAttempts.attempts} + 1` : sql`greatest(${llmAttempts.attempts}, ${terminal})`,
         lastError: input.error,
         auditRef: input.auditRef,
         lastAttemptAt: input.at,
