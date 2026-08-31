@@ -62,7 +62,10 @@ const DEFAULT_PARSE_RETRIES = 1;
  */
 const JSON_ONLY_INSTRUCTION =
   '\n\nOUTPUT CONTRACT: reply with the raw JSON object only. No markdown code ' +
-  'fence, no prose before or after, no explanation.';
+  'fence, no prose before or after, no explanation. Do not use tools and do ' +
+  'not search the web — judge ONLY from the text in this prompt, exactly as a ' +
+  'point-in-time system must: the story is historical, and anything fetched ' +
+  'today is information from the future.';
 
 const RETRY_NUDGE =
   '\n\nYour previous reply was not valid JSON for the required schema. ' +
@@ -391,12 +394,24 @@ async function runCliOnce(
     'json',
     '--model',
     request.modelId,
+    // 2, not 1: a model that attempts a (blocked) tool call spends a turn on
+    // the refusal, and turn 2 is its chance to answer anyway. With 1, that
+    // recovery is impossible: the envelope comes back subtype=error_max_turns,
+    // stop_reason=tool_use, empty result — measured on 2026-08-31, when
+    // world-news discovery prompts made the model reach for web search to
+    // verify stories, killing 1 call in ~3.
     '--max-turns',
-    '1',
+    '2',
     // No tools and no MCP: the interpreter must read only the prompt. Without
     // this the agent can hit the filesystem and the web mid-interpretation.
+    // `--allowed-tools ''` alone does NOT remove the harness's own WebSearch/
+    // WebFetch (that is the 1-in-3 killer above); they must be disallowed by
+    // name, and the JSON_ONLY_INSTRUCTION tells the model why searching is
+    // wrong (a point-in-time judgment must not read the future).
     '--allowed-tools',
     '',
+    '--disallowed-tools',
+    'WebSearch,WebFetch',
     '--strict-mcp-config',
     '--mcp-config',
     '{"mcpServers":{}}',
@@ -482,6 +497,16 @@ export function claudeCliTriageClient(
  */
 function classifyTransportFailure(envelope: CliEnvelope, code: number | null): string | null {
   const result = envelope.result ?? '';
+  // A turn-limit death is the MODEL's doing (it spent its turns reaching for
+  // tools instead of answering), not the transport's — so it must fall through
+  // to classifyContentFailure and burn an attempt. Classified as transport it
+  // aborts the whole pass, and because transport errors burn no attempts, a
+  // story that reliably tempts the model into a tool call would block the
+  // queue forever. Measured 2026-08-31: subtype=error_max_turns,
+  // stop_reason=tool_use, is_error=true, exit 1, empty result.
+  if (envelope.subtype === 'error_max_turns' || envelope.terminal_reason === 'max_turns') {
+    return null;
+  }
   if (envelope.terminal_reason === 'api_error' || envelope.api_error_status != null) {
     return `claude CLI upstream API error: ${result.slice(0, 300)}`;
   }

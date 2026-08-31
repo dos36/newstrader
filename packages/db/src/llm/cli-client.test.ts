@@ -404,3 +404,40 @@ describe('ClaudeCliLlmClient — discovery contract', () => {
     expect(outcome.failure).toMatch(/schema|json/i);
   });
 });
+
+describe('turn-limit death with a non-zero exit — the tool-reach case', () => {
+  it('burns an attempt instead of aborting the pass', async () => {
+    // The live shape, measured 2026-08-31 on world-news discovery prompts:
+    // the model reaches for web search, hits the turn cap, and the CLI exits 1
+    // with subtype=error_max_turns and an EMPTY result. Before the fix this
+    // took the generic is_error-and-exit-1 transport branch, which aborts the
+    // pass and burns nothing — so a story that reliably tempted the model into
+    // a tool call blocked the queue forever.
+    const stdout = envelope({
+      is_error: true,
+      subtype: 'error_max_turns',
+      terminal_reason: 'max_turns',
+      stop_reason: 'tool_use',
+      result: null,
+    });
+    const calls: CliRunInput[] = [];
+    const instance = new ClaudeCliLlmClient({
+      env: {},
+      maxParseRetries: 0,
+      runner: (input): Promise<CliRunResult> => {
+        calls.push(input);
+        return Promise.resolve({ code: 1, stdout, stderr: '', timedOut: false });
+      },
+    });
+
+    // Must RESOLVE (content failure), never throw (transport abort).
+    const outcome = await instance.interpret(REQUEST);
+
+    expect(outcome.interpretation).toBeNull();
+    expect(outcome.failure).toMatch(/turn limit reached/);
+    // And the call itself must have banned the tools that cause this.
+    const args = calls[0]?.args ?? [];
+    expect(args[args.indexOf('--disallowed-tools') + 1]).toBe('WebSearch,WebFetch');
+    expect(args[args.indexOf('--max-turns') + 1]).toBe('2');
+  });
+});
