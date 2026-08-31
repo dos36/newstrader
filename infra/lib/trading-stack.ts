@@ -64,6 +64,12 @@ export interface TradingStackProps extends StackProps {
  *                     call -> llm_signals rows + audit blobs. Warn-skips until
  *                     the Anthropic SecureString exists; spend-capped per UTC
  *                     day; the LLM NEVER touches the money path.
+ *   triage-sweep      rate(5 min), reserved concurrency 1 — resolver r2:
+ *                     vendor-tagged items with only source_hint links (parked
+ *                     below the interpretation gate) -> one claude-haiku
+ *                     relevance call each -> item_triage + llm_ner links.
+ *                     Same key/warn-skip/spend-cap regime as interpret-sweep;
+ *                     the two stages SHARE the daily spend cap.
  *   decide-sweep      rate(5 min), reserved concurrency 1 — pure engine over
  *                     undecided llm_signals; enqueues OrderIntents to q-orders.
  *                     Re-derives undelivered intents from decisions rows, so a
@@ -91,6 +97,7 @@ export class TradingStack extends Stack {
   public readonly qOrders: sqs.Queue;
   public readonly qOrdersDlq: sqs.Queue;
   public readonly interpretSweepFunction: lambdaNodejs.NodejsFunction;
+  public readonly triageSweepFunction: lambdaNodejs.NodejsFunction;
   public readonly decideSweepFunction: lambdaNodejs.NodejsFunction;
   public readonly executeFunction: lambdaNodejs.NodejsFunction;
   public readonly positionManagerFunction: lambdaNodejs.NodejsFunction;
@@ -208,6 +215,58 @@ export class TradingStack extends Stack {
         retryAttempts: 0,
       }),
       description: 'newstrader: interpret sweep every 5m (M2)',
+    });
+
+    // triage-sweep (resolver r2): every 5 minutes, upstream of interpret-sweep
+    // for vendor-tagged items — it is what promotes their parked source_hint
+    // links past the interpretation gate. Haiku calls return in a few seconds;
+    // TRIAGE_BATCH 25 keeps a full pass well inside the 4-min timeout, and
+    // 25/5min = 7,200 items/day of headroom. Reserved concurrency 1 keeps one
+    // caller against Anthropic rate limits (and the interpret sweep runs on
+    // its own concurrency slot — they only share the daily spend cap).
+    this.triageSweepFunction = new lambdaNodejs.NodejsFunction(this, 'TriageSweep', {
+      entry: path.join(HANDLERS_SRC, 'triage-sweep.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 512,
+      timeout: Duration.minutes(4),
+      reservedConcurrentExecutions: 1,
+      bundling,
+      environment: {
+        ...commonEnv,
+        ANTHROPIC_API_KEY_PARAM,
+        LLM_AUDIT_BUCKET: props.llmAuditBucket.bucketName,
+        RAW_BUCKET: props.rawBucket.bucketName,
+        TRIAGE_BATCH: '25',
+      },
+      logGroup: new logs.LogGroup(this, 'TriageSweepLogs', {
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: RemovalPolicy.DESTROY,
+      }),
+      description:
+        'newstrader triage-sweep (resolver r2): vendor-tagged items -> claude-haiku relevance -> item_triage + llm_ner links (the LLM never touches money)',
+      retryAttempts: 0,
+    });
+    props.dbSecret.grantRead(this.triageSweepFunction);
+    grantKillSwitchRead(this.triageSweepFunction);
+    this.triageSweepFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ssm:GetParameter'],
+        resources: [
+          this.formatArn({ service: 'ssm', resource: `parameter${ANTHROPIC_API_KEY_PARAM}` }),
+        ],
+      }),
+    );
+    props.llmAuditBucket.grantWrite(this.triageSweepFunction);
+    props.rawBucket.grantRead(this.triageSweepFunction);
+
+    new scheduler.Schedule(this, 'TriageSweepSchedule', {
+      schedule: scheduler.ScheduleExpression.rate(Duration.minutes(5)),
+      target: new schedulerTargets.LambdaInvoke(this.triageSweepFunction, {
+        retryAttempts: 0,
+      }),
+      description: 'newstrader: triage sweep every 5m (resolver r2)',
     });
 
     // decide-sweep: every 5 minutes; reserved concurrency 1 so a slow pass
@@ -329,11 +388,12 @@ export class TradingStack extends Stack {
       }),
     );
 
-    // The two 5-minute sweeps alarm on error RATE (a lone transient failure
+    // The 5-minute sweeps alarm on error RATE (a lone transient failure
     // must not page; a sustained one must) — mirrors the poller alarms.
     for (const [name, fn] of [
       ['DecideSweep', this.decideSweepFunction],
       ['InterpretSweep', this.interpretSweepFunction],
+      ['TriageSweep', this.triageSweepFunction],
     ] as const) {
       const errors = fn.metricErrors({ period: Duration.minutes(5), statistic: 'Sum' });
       const invocations = fn.metricInvocations({ period: Duration.minutes(5), statistic: 'Sum' });
