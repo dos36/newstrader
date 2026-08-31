@@ -157,9 +157,18 @@ describe('RssAdapter cursor (guid-set)', () => {
 });
 
 describe('RSS presets', () => {
-  it('exposes the four verified preset feeds', () => {
+  it('exposes every verified preset feed, NYT feeds first', () => {
     const adapters = rssPresetAdapters();
+    // Asserted as an exact ordered list on purpose: adding a feed should make
+    // this fail and force a deliberate edit, because each new preset starts
+    // polling in production the moment it lands.
     expect(adapters.map((a) => a.sourceKey)).toEqual([
+      'nyt_business',
+      'nyt_dealbook',
+      'nyt_economy',
+      'nyt_technology',
+      'nyt_world',
+      'nyt_climate',
       'globenewswire',
       'coindesk',
       'cointelegraph',
@@ -170,6 +179,9 @@ describe('RSS presets', () => {
       expect(a.feedUrl).toMatch(/^https:\/\//);
     }
     expect(RSS_PRESETS.coindesk.feedUrl).toBe('https://www.coindesk.com/arc/outboundfeeds/rss');
+    expect(RSS_PRESETS.nyt_business.feedUrl).toBe(
+      'https://rss.nytimes.com/services/xml/rss/nyt/Business.xml',
+    );
   });
 
   it('sends a User-Agent and Accept header when fetching', async () => {

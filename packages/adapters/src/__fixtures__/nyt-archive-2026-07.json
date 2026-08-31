@@ -1,0 +1,153 @@
+{
+    "status": "OK",
+    "copyright": "Copyright (c) 2026 The New York Times Company. All Rights Reserved.",
+    "response": {
+        "meta": {
+            "hits": 6,
+            "offset": 0,
+            "time": 412
+        },
+        "docs": [
+            {
+                "web_url": "https://www.nytimes.com/2026/07/03/business/economy/fed-rate-decision.html",
+                "snippet": "Policymakers held rates steady but signaled that a cut could come as soon as September.",
+                "lead_paragraph": "WASHINGTON — Federal Reserve officials on Wednesday left interest rates unchanged for a fourth consecutive meeting, but the language of their statement shifted in a way that investors read as an opening for a cut.",
+                "abstract": "Policymakers held rates steady but signaled that a cut could come as soon as September.",
+                "print_page": "1",
+                "blog": [],
+                "source": "The New York Times",
+                "multimedia": [],
+                "headline": {
+                    "main": "Fed Holds Rates Steady but Opens the Door to a September Cut",
+                    "kicker": null
+                },
+                "keywords": [
+                    { "name": "subject", "value": "Interest Rates", "rank": 1 },
+                    { "name": "organizations", "value": "Federal Reserve System", "rank": 2 }
+                ],
+                "pub_date": "2026-07-03T18:04:11+0000",
+                "document_type": "article",
+                "news_desk": "Business",
+                "section_name": "Business Day",
+                "subsection_name": "Economy",
+                "byline": { "original": "By Jeanna Smialek", "person": [] },
+                "type_of_material": "News",
+                "_id": "nyt://article/aaaa1111-0000-4000-8000-000000000001",
+                "word_count": "1184"
+            },
+            {
+                "web_url": "https://www.nytimes.com/2026/07/11/world/asia/nepal-floods-hydropower.html",
+                "snippet": "The collapse of two dams has knocked out a fifth of the country's generating capacity.",
+                "lead_paragraph": "KATHMANDU, Nepal — Weeks of monsoon rain overwhelmed the spillways of two hydropower dams in the country's mountainous north.",
+                "abstract": "The collapse of two dams has knocked out a fifth of the country's generating capacity.",
+                "print_page": null,
+                "blog": [],
+                "source": "The New York Times",
+                "multimedia": [],
+                "headline": {
+                    "main": "Nepal Floods Cripple Hydropower, Darkening Half the Country",
+                    "kicker": "Asia Pacific"
+                },
+                "keywords": [
+                    { "name": "subject", "value": "Floods", "rank": 1 }
+                ],
+                "pub_date": "2026-07-11T09:41:02+0000",
+                "document_type": "article",
+                "news_desk": "Foreign",
+                "section_name": "World",
+                "subsection_name": "Asia Pacific",
+                "byline": { "original": "By Bhadra Sharma", "person": [] },
+                "type_of_material": "News",
+                "_id": "nyt://article/aaaa1111-0000-4000-8000-000000000002",
+                "word_count": 903
+            },
+            {
+                "web_url": "https://www.nytimes.com/2026/07/14/sports/soccer/transfer-window.html",
+                "snippet": "A record fee, and a club that may regret it.",
+                "lead_paragraph": "The transfer window closed with one more surprise.",
+                "abstract": "A record fee, and a club that may regret it.",
+                "print_page": null,
+                "blog": [],
+                "source": "The New York Times",
+                "multimedia": [],
+                "headline": { "main": "The Summer's Most Expensive Gamble", "kicker": "On Soccer" },
+                "keywords": [],
+                "pub_date": "2026-07-14T11:00:00+0000",
+                "document_type": "article",
+                "news_desk": "Sports",
+                "section_name": "Sports",
+                "subsection_name": "Soccer",
+                "byline": { "original": "By Rory Smith", "person": [] },
+                "type_of_material": "News Analysis",
+                "_id": "nyt://article/aaaa1111-0000-4000-8000-000000000003",
+                "word_count": "1402"
+            },
+            {
+                "web_url": "https://www.nytimes.com/video/2026/07/16/business/chip-fab-tour.html",
+                "snippet": "A walk through a finished fab.",
+                "lead_paragraph": null,
+                "abstract": null,
+                "print_page": null,
+                "blog": [],
+                "source": "The New York Times",
+                "multimedia": [],
+                "headline": { "main": "Inside a Finished Chip Fab", "kicker": null },
+                "keywords": [],
+                "pub_date": "2026-07-16T13:22:40+0000",
+                "document_type": "multimedia",
+                "news_desk": "Business",
+                "section_name": "Business Day",
+                "subsection_name": null,
+                "byline": { "original": null, "person": [] },
+                "type_of_material": "Video",
+                "_id": "nyt://article/aaaa1111-0000-4000-8000-000000000004",
+                "word_count": null
+            },
+            {
+                "web_url": "https://www.nytimes.com/2026/07/20/business/insurers-catastrophe-losses.html",
+                "snippet": null,
+                "lead_paragraph": "Reinsurers have begun to reprice Asian hydro risk.",
+                "abstract": null,
+                "print_page": null,
+                "blog": [],
+                "source": "The New York Times",
+                "multimedia": [],
+                "headline": { "main": "Reinsurers Reprice Asian Hydro Risk After a Brutal Monsoon", "kicker": null },
+                "keywords": [
+                    { "name": "subject", "value": "Insurance", "rank": 1 },
+                    { "name": "subject", "rank": 2 }
+                ],
+                "pub_date": "2026-07-20T21:15:00+0000",
+                "document_type": "article",
+                "news_desk": "Business",
+                "section_name": "Business Day",
+                "subsection_name": null,
+                "byline": { "original": "By Emily Flitter", "person": [] },
+                "type_of_material": "News",
+                "_id": "nyt://article/aaaa1111-0000-4000-8000-000000000005",
+                "word_count": "not-a-number"
+            },
+            {
+                "web_url": "https://www.nytimes.com/2026/07/28/business/orphan-record.html",
+                "snippet": "No headline on this one.",
+                "lead_paragraph": null,
+                "abstract": "No headline on this one.",
+                "print_page": null,
+                "blog": [],
+                "source": "The New York Times",
+                "multimedia": [],
+                "headline": { "main": "   ", "kicker": null },
+                "keywords": [],
+                "pub_date": "2026-07-28T10:00:00+0000",
+                "document_type": "article",
+                "news_desk": "Business",
+                "section_name": "Business Day",
+                "subsection_name": null,
+                "byline": { "original": null, "person": [] },
+                "type_of_material": "News",
+                "_id": "nyt://article/aaaa1111-0000-4000-8000-000000000006",
+                "word_count": "12"
+            }
+        ]
+    }
+}

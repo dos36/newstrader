@@ -129,6 +129,16 @@ export const lambdaDb: () => Promise<Db> = lazyAsync(async () =>
  * (edgar | massive | rss — one per poller Lambda in the ingest stack).
  * Families needing an operator secret read it from SSM here; the parameter
  * NAMES arrive via env (EDGAR_USER_AGENT_PARAM / MASSIVE_API_KEY_PARAM).
+ *
+ * The NYT live feeds ride in under `rss` for free, because `rssPresetAdapters`
+ * owns the preset list. **There is deliberately no family for the NYT ARCHIVE
+ * adapter, and adding one would be a mistake.** A backfill is a bounded
+ * historical walk that advances exactly one month per `fetchSince` call, so on
+ * a 2-minute schedule a decade of history would take most of a day while
+ * burning invocations to no purpose. It also spends a hard 2,000-request daily
+ * budget that an operator should be watching. Run it from the CLI (`pnpm cli
+ * poll nyt_archive`) where the walk is visible and interruptible; this registry
+ * is for feeds that must keep running unattended.
  */
 export async function pollerAdapters(pollerSources: string): Promise<SourceAdapter[]> {
   const adapters: SourceAdapter[] = [];

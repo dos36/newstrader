@@ -70,6 +70,7 @@ import dotenv from 'dotenv';
 import {
   ensureSource,
   loadUnclusteredItems,
+  NYT_SOURCE_KEYS,
   runPoll,
   runProcess,
 } from '../../handlers/src/lib/ingest.js';
@@ -1351,6 +1352,17 @@ program
   .option('--session <bucket>', `filter every table to one session: ${SESSION_BUCKETS.join('|')}`)
   .option('--event-types <list>', 'comma-separated event types to include')
   .option(
+    '--sources <list>',
+    'comma-separated news_sources.source_key values; keeps signals whose cluster contains at ' +
+      "least one item from them (shorthand 'nyt' expands to every NYT feed plus the archive)",
+  )
+  .option(
+    '--sources-exclusive',
+    'with --sources: require the cluster to contain NOTHING but those sources — the honest cut ' +
+      'for "what is this source worth alone", since a shared cluster otherwise credits a source ' +
+      'for a story a wire also carried',
+  )
+  .option(
     '--cost-bps <n>',
     'assumed round-trip cost for the whitelist-bridge verdict (spread + slippage + fees)',
     '20',
@@ -1376,6 +1388,8 @@ program
       holdout?: boolean;
       session?: string;
       eventTypes?: string;
+      sources?: string;
+      sourcesExclusive?: boolean;
       costBps: string;
       horizons: string;
     }) => {
@@ -1385,6 +1399,10 @@ program
       const session = parseSession(options.session);
       const horizons = (splitList(options.horizons) ?? []).map(parseEvalHorizon);
       const eventTypes = splitList(options.eventTypes);
+      const sources = expandSourceKeys(splitList(options.sources));
+      if (options.sourcesExclusive === true && sources === undefined) {
+        throw new Error('eval:signals: --sources-exclusive only means something with --sources');
+      }
       await withDb(async (db) => {
         await printEvalSignals(db, {
           versions: splitList(options.versions) ?? [CURRENT_PROMPT_VERSION],
@@ -1399,6 +1417,8 @@ program
           ...(options.split !== undefined ? { split: parseIsoDate(options.split, '--split') } : {}),
           ...(session !== undefined ? { session } : {}),
           ...(eventTypes !== undefined ? { eventTypes } : {}),
+          ...(sources !== undefined ? { sources } : {}),
+          ...(options.sourcesExclusive === true ? { sourcesExclusive: true } : {}),
         });
       });
     },
@@ -1688,6 +1708,27 @@ function splitList(raw: string | undefined): string[] | undefined {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   return entries.length > 0 ? entries : undefined;
+}
+
+/**
+ * Expand `--sources` shorthands into real `source_key` values.
+ *
+ * `nyt` becomes every NYT feed plus the archive, read from the ingest layer's
+ * own name table rather than typed out here. A hand-listed set would silently
+ * go stale the moment a feed is added, and a report that quietly dropped a feed
+ * would still print as though it covered the source.
+ */
+function expandSourceKeys(raw: string[] | undefined): string[] | undefined {
+  if (raw === undefined) return undefined;
+  const expanded = new Set<string>();
+  for (const entry of raw) {
+    if (entry.toLowerCase() === 'nyt') {
+      for (const key of NYT_SOURCE_KEYS) expanded.add(key);
+    } else {
+      expanded.add(entry);
+    }
+  }
+  return expanded.size > 0 ? [...expanded] : undefined;
 }
 
 function parseSession(raw: string | undefined): SessionBucket | undefined {

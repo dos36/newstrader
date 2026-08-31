@@ -2,6 +2,7 @@ import type { FetchedItem, FetchResult, SourceAdapter } from '@newstrader/core';
 import { z } from 'zod';
 
 import { defaultFetch, fetchText, type FetchLike } from './http.js';
+import { NYT_RSS_PRESETS } from './nyt.js';
 import { isRecord, linkHref, parseXml, stripHtml, textOf, toIsoDate } from './xml.js';
 
 /**
@@ -153,11 +154,17 @@ function attrOfTerm(value: unknown): string | undefined {
 }
 
 /**
- * Preset feeds. All four URLs verified live (HTTP 200, XML content) 2026-07-10.
- * CoinDesk 301-redirects to the same path without the trailing slash; the
- * canonical no-slash form is used here.
+ * Preset feeds. The original four URLs verified live (HTTP 200, XML content)
+ * 2026-07-10; the NYT feeds verified 2026-08-31. CoinDesk 301-redirects to the
+ * same path without the trailing slash; the canonical no-slash form is used
+ * here.
+ *
+ * The NYT feeds live in `nyt.ts` next to the archive adapter, because the two
+ * share one publisher's terms and one documented reason for reading
+ * `<description>` as the abstract rather than as a body.
  */
 export const RSS_PRESETS = {
+  ...NYT_RSS_PRESETS,
   globenewswire: {
     sourceKey: 'globenewswire',
     feedUrl:

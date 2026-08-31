@@ -88,6 +88,26 @@ export interface LoadEvalRowsOptions {
   split?: Date;
   holdout: boolean;
   eventTypes?: string[];
+  /**
+   * Restrict to clusters fed by these `news_sources.source_key` values.
+   *
+   * A cluster merges duplicate reports of one story, so it routinely spans
+   * several sources and "signals from source X" has two honest readings:
+   *
+   *   - default (inclusive): the cluster contains AT LEAST ONE item from the
+   *     list. Answers "how did signals that this source touched perform?" —
+   *     but a cluster it shared with a wire gets counted, so a source can look
+   *     good on stories it merely echoed.
+   *   - `sourcesExclusive`: the cluster contains NOTHING BUT items from the
+   *     list. Answers "what is this source worth on its own?", which is the
+   *     question a single-source efficiency report is actually asking.
+   *
+   * Neither is more correct; they measure different things, so a report should
+   * say which one it used.
+   */
+  sources?: string[];
+  /** See {@link LoadEvalRowsOptions.sources}. Ignored when `sources` is empty. */
+  sourcesExclusive?: boolean;
 }
 
 interface RawEvalRow {
@@ -154,6 +174,30 @@ export async function loadEvalRows(db: Db, options: LoadEvalRowsOptions): Promis
     // Tune = clusters before the split; holdout = at/after. Splitting on the
     // CLUSTER anchor keeps every version's row for a pair on the same side.
     filters += ` and c.first_received_at ${options.holdout ? '>=' : '<'} $${String(params.length)}`;
+  }
+  if (options.sources !== undefined && options.sources.length > 0) {
+    params.push(options.sources);
+    const sourceParam = `$${String(params.length)}`;
+    // Semi-join on the cluster's items. Written as exists/not-exists rather
+    // than a join so a multi-item cluster cannot fan the signal row out into
+    // duplicates — a duplicated row would silently double-weight that story in
+    // every hit rate and mean below.
+    filters += ` and exists (
+                   select 1 from news_cluster_items nci
+                     join raw_news_items ri on ri.id = nci.item_id
+                     join news_sources ns on ns.id = ri.source_id
+                    where nci.cluster_id = c.id
+                      and ns.source_key = any(${sourceParam})
+                 )`;
+    if (options.sourcesExclusive === true) {
+      filters += ` and not exists (
+                     select 1 from news_cluster_items nci
+                       join raw_news_items ri on ri.id = nci.item_id
+                       join news_sources ns on ns.id = ri.source_id
+                      where nci.cluster_id = c.id
+                        and not (ns.source_key = any(${sourceParam}))
+                   )`;
+    }
   }
 
   const abnSelect = EVAL_HORIZONS.map(

@@ -3,11 +3,13 @@ import type { SourceAdapter } from '@newstrader/core';
 import { edgarAdapters } from './edgar.js';
 import type { FetchLike } from './http.js';
 import { massiveNewsAdapter } from './massive-news.js';
+import { nytArchiveAdapter } from './nyt.js';
 import { rssPresetAdapters } from './rss.js';
 
 export * from './edgar.js';
 export * from './http.js';
 export * from './massive-news.js';
+export * from './nyt.js';
 export * from './raw-store.js';
 export * from './rss.js';
 
@@ -37,6 +39,16 @@ export function allAdapters(
     adapters.push(massiveNewsAdapter(env, fetchImpl));
   } else {
     console.warn('[adapters] MASSIVE_API_KEY unset — skipping the Massive news adapter.');
+  }
+
+  // The NYT archive is a BACKFILL adapter: each fetch walks one more month of
+  // history, so including it in the scheduled poller is intentional — the walk
+  // advances a month per cycle and then no-ops forever. It is registered
+  // separately from the NYT RSS presets, which are live and need no key.
+  if (env['NYT_API_KEY']?.trim()) {
+    adapters.push(nytArchiveAdapter(env, fetchImpl));
+  } else {
+    console.warn('[adapters] NYT_API_KEY unset — skipping the NYT archive backfill adapter.');
   }
 
   return adapters;

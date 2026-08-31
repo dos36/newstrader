@@ -1,6 +1,6 @@
 import { rawStoreKey } from '@newstrader/adapters';
 import { contentHash, newId, RawItemV1 } from '@newstrader/core';
-import type { RawStore, SourceAdapter } from '@newstrader/core';
+import type { FetchedItem, RawStore, SourceAdapter } from '@newstrader/core';
 import {
   attachItemToCluster,
   ingestWatermarks,
@@ -85,6 +85,35 @@ export interface ProcessCounts {
  * Any throw aborts before the watermark is saved — the next cycle refetches
  * and the unique (source_id, external_id) constraint absorbs the overlap.
  */
+/**
+ * `received_at` for one item: our clock, except for a historical-archive
+ * adapter, which supplies the timestamp itself.
+ *
+ * The gate is `adapter.backfill === true` and nothing else. A live adapter that
+ * sets `receivedAtOverride` — by bug, or because a feed it parses was
+ * manipulated — is ignored here rather than trusted, which keeps invariant 3
+ * ("`received_at` is the only clock the trading path may use") true by
+ * construction instead of by convention. An override that is present but
+ * unparseable throws: silently falling back to `now()` would place a 2016
+ * article in today's cluster window, and a defensive parser refusing bad data
+ * beats a backfill that quietly corrupts the timeline.
+ */
+export function resolveReceivedAt(
+  adapter: Pick<SourceAdapter, 'sourceKey' | 'backfill'>,
+  item: Pick<FetchedItem, 'externalId' | 'receivedAtOverride'>,
+  now: () => Date,
+): Date {
+  if (adapter.backfill !== true || item.receivedAtOverride === undefined) return now();
+  const overridden = new Date(item.receivedAtOverride);
+  if (Number.isNaN(overridden.getTime())) {
+    throw new Error(
+      `${adapter.sourceKey}: unparseable receivedAtOverride "${item.receivedAtOverride}" ` +
+        `on item ${item.externalId}`,
+    );
+  }
+  return overridden;
+}
+
 export async function runPoll(deps: IngestDeps, adapter: SourceAdapter): Promise<PollCounts> {
   const now = deps.now ?? (() => new Date());
   const sourceId = await ensureSource(deps.db, adapter);
@@ -97,7 +126,7 @@ export async function runPoll(deps: IngestDeps, adapter: SourceAdapter): Promise
   let duplicates = 0;
 
   for (const item of items) {
-    const receivedAt = now();
+    const receivedAt = resolveReceivedAt(adapter, item, now);
     const hash = contentHash(item.headline, item.body);
     // Raw store first (immutable, overwrite-idempotent), DB row second: a row
     // must never exist whose payload_ref points at nothing.
@@ -306,7 +335,24 @@ const SOURCE_NAMES: Record<string, string> = {
   coindesk: 'CoinDesk',
   cointelegraph: 'Cointelegraph',
   theblock: 'The Block',
+  nyt_business: 'New York Times Business',
+  nyt_dealbook: 'New York Times DealBook',
+  nyt_economy: 'New York Times Economy',
+  nyt_technology: 'New York Times Technology',
+  nyt_world: 'New York Times World',
+  nyt_climate: 'New York Times Climate',
+  nyt_archive: 'New York Times Archive API (backfill)',
 };
+
+/**
+ * Every NYT source key, live feeds and the archive together. Exported so the
+ * evaluation CLI can scope a report to "NYT only" without re-listing feeds
+ * that a later commit might add — a stale hand-typed list in a report is worse
+ * than no filter, because the report still looks complete.
+ */
+export const NYT_SOURCE_KEYS: readonly string[] = Object.keys(SOURCE_NAMES).filter((key) =>
+  key.startsWith('nyt_'),
+);
 
 // ---------------------------------------------------------------- internals --
 

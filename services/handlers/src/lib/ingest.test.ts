@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseRawItemRecord, sourceDisplayName } from './ingest.js';
+import { parseRawItemRecord, resolveReceivedAt, sourceDisplayName } from './ingest.js';
 
 /**
  * Network-free unit tests for the pure parts of the shared ingest core.
@@ -56,5 +56,63 @@ describe('sourceDisplayName', () => {
     expect(sourceDisplayName('edgar_8k')).toBe('SEC EDGAR 8-K filings');
     expect(sourceDisplayName('massive_news')).toBe('Massive (ex-Polygon) news API');
     expect(sourceDisplayName('some_future_source')).toBe('some_future_source');
+  });
+});
+
+/**
+ * The `received_at` gate. This is where invariant 3 is enforced in code rather
+ * than in prose: only an adapter that declares `backfill === true` may place
+ * its own rows on the timeline, and everything else gets our clock.
+ */
+describe('resolveReceivedAt', () => {
+  const NOW = new Date('2026-08-31T15:00:00.000Z');
+  const now = (): Date => NOW;
+  const HISTORICAL = '2016-03-04T09:30:00.000Z';
+
+  it('uses our clock for a live adapter with no override', () => {
+    expect(resolveReceivedAt({ sourceKey: 'nyt_world' }, { externalId: 'a' }, now)).toEqual(NOW);
+  });
+
+  it('uses our clock for a backfill adapter that supplies no override', () => {
+    expect(
+      resolveReceivedAt({ sourceKey: 'nyt_archive', backfill: true }, { externalId: 'a' }, now),
+    ).toEqual(NOW);
+  });
+
+  it('honours the override only for a declared backfill adapter', () => {
+    expect(
+      resolveReceivedAt(
+        { sourceKey: 'nyt_archive', backfill: true },
+        { externalId: 'a', receivedAtOverride: HISTORICAL },
+        now,
+      ),
+    ).toEqual(new Date(HISTORICAL));
+  });
+
+  it('IGNORES the override on a live adapter, however it got there', () => {
+    // The whole point of the flag. A live adapter that sets this — through a
+    // bug, or because a feed it parses was manipulated — must not be able to
+    // backdate arrival times, because the trading path reads received_at.
+    for (const backfill of [undefined, false] as const) {
+      expect(
+        resolveReceivedAt(
+          { sourceKey: 'nyt_world', ...(backfill !== undefined ? { backfill } : {}) },
+          { externalId: 'a', receivedAtOverride: HISTORICAL },
+          now,
+        ),
+      ).toEqual(NOW);
+    }
+  });
+
+  it('throws on an unparseable override rather than falling back to now()', () => {
+    // A silent fallback would drop a 2016 article into today's clustering
+    // window, corrupting the timeline in a way no later query could detect.
+    expect(() =>
+      resolveReceivedAt(
+        { sourceKey: 'nyt_archive', backfill: true },
+        { externalId: 'item-42', receivedAtOverride: 'last Tuesday' },
+        now,
+      ),
+    ).toThrow(/nyt_archive.*item-42/s);
   });
 });
