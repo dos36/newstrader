@@ -340,3 +340,67 @@ describe('extractJsonObject', () => {
     expect(extractJsonObject('{unclosed')).toBeNull();
   });
 });
+
+describe('ClaudeCliLlmClient — discovery contract', () => {
+  const VALID_DISCOVERY = {
+    macro_event_type: 'commodity_supply',
+    market_scope: 'companies',
+    company_exposures: [
+      { symbol: 'EWG', direction: 'bearish', materiality: 0.6, expected_move_bps: 90 },
+    ],
+    horizon: '1d',
+    already_expected: false,
+    materiality: 0.6,
+    confidence: 0.5,
+    reasoning: 'Supply fell; the country fund tracking the affected market is directly exposed.',
+  };
+
+  const DISCOVERY_REQUEST: LlmCallRequest = {
+    systemPrompt: 'DISCOVERY SYSTEM BODY',
+    cachedContext: 'CANDIDATE UNIVERSE (2 instruments...):\nAAA | Alpha\nEWG | Germany fund',
+    userPrompt: 'Headline: crisis halts commerce.',
+    modelId: 'claude-sonnet-5',
+    maxTokens: 10_000,
+    effort: 'medium',
+  };
+
+  it('parses a valid discovery judgment and folds the universe into the system prompt', async () => {
+    const { instance, calls } = client([
+      envelope({ result: JSON.stringify(VALID_DISCOVERY) }),
+    ]);
+
+    const outcome = await instance.interpretDiscovery(DISCOVERY_REQUEST);
+
+    expect(outcome.failure).toBeNull();
+    expect(outcome.interpretation?.company_exposures[0]?.symbol).toBe('EWG');
+    // The CLI has no cache semantics, so the universe block must ride in the
+    // appended system prompt — otherwise the model never sees its candidates.
+    const appended = calls[0]?.args.join(' ') ?? '';
+    expect(appended).toContain('DISCOVERY SYSTEM BODY');
+    expect(appended).toContain('CANDIDATE UNIVERSE');
+  });
+
+  it('treats an incoherent answer as a content failure, exactly like the API client', async () => {
+    const incoherent = { ...VALID_DISCOVERY, market_scope: 'none' };
+    const { instance } = client([envelope({ result: JSON.stringify(incoherent) })], {
+      maxParseRetries: 0,
+    });
+
+    const outcome = await instance.interpretDiscovery(DISCOVERY_REQUEST);
+
+    expect(outcome.interpretation).toBeNull();
+    expect(outcome.failure).toMatch(/incoherent/);
+  });
+
+  it('rejects a company-schema answer against the discovery schema', async () => {
+    // A response shaped for the WRONG contract must fail validation, not be
+    // half-read: field names overlap enough (direction, horizon...) that a
+    // permissive parser could smuggle one through.
+    const { instance } = client([envelope()], { maxParseRetries: 0 });
+
+    const outcome = await instance.interpretDiscovery(DISCOVERY_REQUEST);
+
+    expect(outcome.interpretation).toBeNull();
+    expect(outcome.failure).toMatch(/schema|json/i);
+  });
+});

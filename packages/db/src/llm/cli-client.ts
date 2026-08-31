@@ -1,10 +1,21 @@
 import { spawn } from 'node:child_process';
 
-import { InterpretationSchema, TriageResultSchema, type TriageResult } from '@newstrader/core';
+import {
+  discoveryCoherenceError,
+  DiscoveryInterpretationSchema,
+  InterpretationSchema,
+  TriageResultSchema,
+  type TriageResult,
+} from '@newstrader/core';
 import { z } from 'zod';
 
 import type { LlmTransport } from '../shared-constants.js';
-import type { LlmCallOutcome, LlmCallRequest, LlmClient } from './anthropic-client.js';
+import type {
+  DiscoveryLlmCallOutcome,
+  LlmCallOutcome,
+  LlmCallRequest,
+  LlmClient,
+} from './anthropic-client.js';
 import type { LlmUsage } from './cost.js';
 import type { TriageCallOutcome, TriageCallRequest, TriageLlmClient } from './triage-client.js';
 
@@ -211,6 +222,48 @@ export class ClaudeCliLlmClient implements LlmClient {
       rawResponse: outcome.rawResponse,
       latencyMs: outcome.latencyMs,
     };
+  }
+
+  /**
+   * Discovery contract over the CLI transport — same comparability caveats as
+   * {@link interpret} (transport='cli', ':cli' signal keys, effort/max_tokens
+   * unapplied), plus one mechanical difference: the CLI has no prompt-caching
+   * semantics, so the candidate-universe block that the API client sends as a
+   * second cached system block is simply concatenated onto the system prompt.
+   * Subscription billing makes the repeated ~3.5k tokens a latency cost, not a
+   * dollar one.
+   */
+  async interpretDiscovery(request: LlmCallRequest): Promise<DiscoveryLlmCallOutcome> {
+    const systemPrompt =
+      request.cachedContext === undefined
+        ? request.systemPrompt
+        : `${request.systemPrompt}\n\n${request.cachedContext}`;
+    const outcome = await runCliStructuredCall(
+      this.config,
+      {
+        systemPrompt,
+        userPrompt: request.userPrompt,
+        modelId: request.modelId,
+        effortRequested: request.effort,
+        maxTokensRequested: request.maxTokens,
+      },
+      (json) => DiscoveryInterpretationSchema.safeParse(json),
+    );
+    const base = {
+      failure: outcome.failure,
+      stopReason: outcome.stopReason,
+      usage: outcome.usage,
+      rawResponse: outcome.rawResponse,
+      latencyMs: outcome.latencyMs,
+    };
+    if (outcome.value === null) return { ...base, interpretation: null };
+    // Same boundary rule as the API client: an internally contradictory answer
+    // is a content failure, never repaired into a row.
+    const incoherent = discoveryCoherenceError(outcome.value);
+    if (incoherent !== null) {
+      return { ...base, interpretation: null, failure: `incoherent answer: ${incoherent}` };
+    }
+    return { ...base, interpretation: outcome.value };
   }
 }
 

@@ -4,6 +4,7 @@
  * `export * from './universe/index.js';` to packages/db/src/index.ts.
  */
 export * from './aliases.js';
+export * from './etfs.js';
 export * from './http.js';
 export * from './sec-tickers.js';
 export * from './sync.js';

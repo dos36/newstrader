@@ -45,7 +45,7 @@ import { PROMPT_REGISTRY } from './registry.js';
 const V1M_SYSTEM_PROMPT_SHA256 =
   '8b21637988bee420cd3342e01a15d4befb652dc9d36939d9ed6fda7c860983e9';
 const V2M_SYSTEM_PROMPT_SHA256 =
-  '1a73d0fdc3455a9fc88842170cb594e49dee5611c998267efa97a867aad7488d';
+  'fbfd650358df5580af12c4d391b8054f0fcc405e48918ba33c53d5b1c0f5d102';
 
 const VALID: MacroInterpretation = {
   macro_event_type: 'monetary_policy',
@@ -633,5 +633,25 @@ describe('v2m prompt content', () => {
     const text = getMacroPromptDefinition('v2m').systemPrompt;
     expect(text).toContain('uniformly-affected crowd');
     expect(text).toContain('whole-market move is the benchmark');
+  });
+});
+
+describe('v2m prompt — ETF candidates', () => {
+  it('teaches the ETF exception to the uniformly-affected-crowd rule', () => {
+    // Without this, a one-country or one-commodity event still answers "none"
+    // even though the universe now holds the fund that IS the affected group.
+    const text = getMacroPromptDefinition('v2m').systemPrompt;
+    expect(text).toContain('check the ETFs');
+    expect(text).toContain('single-country ETF');
+    expect(text).toContain('bond ETF');
+  });
+
+  it('keeps the broad-equity restraint intact alongside the ETF rule', () => {
+    // The rate-surprise example must still refuse three arbitrary stocks; the
+    // ETF rule redirects the pick, it does not license crowd-picking.
+    const text = getMacroPromptDefinition('v2m').systemPrompt;
+    expect(text).toContain('uniformly-affected crowd');
+    expect(text).toContain('whole-market move is the benchmark');
+    expect(text).toContain('not three arbitrary stocks');
   });
 });

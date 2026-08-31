@@ -53,6 +53,8 @@ import {
   resolveUnlinkedItems,
   runReplay,
   syncCalendar,
+  seedEtfUniverse,
+  listEtfUniverse,
   syncUniverse,
 } from '@newstrader/db';
 import type {
@@ -247,6 +249,27 @@ async function drainProcessBacklog(db: Db, batchSize: number): Promise<void> {
       `linksWritten=${totals.linksWritten} staleClustersClosed=${closed}`,
   );
 }
+
+program
+  .command('universe:seed-etfs')
+  .description(
+    "Seed the curated ETF universe (index_code 'ETF_CORE'): ~80 large, liquid, US-listed " +
+      'country/sector/commodity/bond/currency funds. These join the macro DISCOVERY candidate ' +
+      'list only — every other membership reader filters on SPX, so the S&P company universe, ' +
+      'the earnings calendar, and the resolver dictionary are unaffected. Idempotent; removing ' +
+      'an ETF later is a deliberate valid_to edit, never a re-run.',
+  )
+  .action(async () => {
+    await withDb(async (db) => {
+      const counts = await seedEtfUniverse(db);
+      const symbols = await listEtfUniverse(db);
+      console.log(
+        `[universe:seed-etfs] instruments inserted=${counts.instrumentsInserted} ` +
+          `existing=${counts.instrumentsExisting} memberships inserted=${counts.membershipsInserted}`,
+      );
+      console.log(`[universe:seed-etfs] open ETF_CORE members: ${symbols.length}`);
+    });
+  });
 
 program
   .command('universe:sync')
@@ -901,6 +924,12 @@ program
   )
   .option('--dry-run', 'assemble candidates and print the first prompt; no API calls, no writes')
   .option('--prompt-version <v>', 'macro registry version (default: the current macro version)')
+  .option(
+    '--mode <api|cli>',
+    "transport: 'api' = SDK + ANTHROPIC_API_KEY; 'cli' = the Claude Code CLI on your " +
+      'subscription, DEV-ONLY (transport=cli rows, :cli signal keys, effort/max_tokens ' +
+      'unapplied — not comparable to api rows). Defaults to LLM_TRANSPORT, else api.',
+  )
   .description(
     'MACRO interpretation: clusters carrying NO instrument link (the class `interpret` discards, ' +
       '~87% of everything clustered). The current version (v2m, contract=discovery) picks up to ' +
@@ -923,6 +952,7 @@ program
       sources?: string;
       dryRun?: boolean;
       promptVersion?: string;
+      mode?: string;
     }) => {
       const batch = parsePositiveInt(options.batch, '--batch');
       const lookbackHours = parsePositiveInt(options.lookbackHours, '--lookback-hours');
@@ -936,14 +966,28 @@ program
       if (options.promptVersion !== undefined) getMacroPromptDefinition(options.promptVersion);
       const sources = expandSourceKeys(splitList(options.sources));
       const dailySpendCapUsd = parseSpendCapEnv();
+      const mode = parseTransportMode(options.mode ?? process.env['LLM_TRANSPORT']);
+      if (mode === 'cli' && !dryRun) {
+        // Same loudness as `interpret --mode cli`, same reasons — plus the
+        // universe block rides uncached on every call over this transport.
+        console.warn(
+          '[interpret:macro] mode=cli — DEV ONLY. Rows are stamped transport=cli with a ' +
+            ':cli signal_key, ignore the prompt version effort/max_tokens, and must be ' +
+            'excluded from calibration and golden evals. The CLI also aborts long passes ' +
+            'intermittently — transport errors burn no attempts, so re-run the same ' +
+            'command until examined is 0.',
+        );
+      }
 
       // Dry runs must work before any key exists. The stub throws on ALL
       // methods: the sweep checks for the active contract's method up front,
       // so a stub missing one would fail the dry run with a misleading
-      // transport error.
+      // transport error. It carries the resolved transport because the
+      // transport is part of the signal key, and therefore decides which
+      // candidates a dry run reports.
       const llm: LlmClient = dryRun
         ? {
-            transport: 'api',
+            transport: mode,
             interpret: (): never => {
               throw new Error('dry-run must never reach the LLM');
             },
@@ -954,7 +998,9 @@ program
               throw new Error('dry-run must never reach the LLM');
             },
           }
-        : anthropicLlmClient(process.env);
+        : mode === 'cli'
+          ? claudeCliLlmClient(process.env)
+          : anthropicLlmClient(process.env);
 
       await withDb(async (db) => {
         const store = new FsRawStore(
