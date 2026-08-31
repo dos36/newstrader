@@ -16,7 +16,7 @@
  * suite database so nothing persists between runs. Requires CREATEDB rights
  * (the docker-compose superuser has them).
  */
-import { contentHash, newId } from '@newstrader/core';
+import { contentHash, newId, normalizeText } from '@newstrader/core';
 import { eq } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -79,6 +79,7 @@ describe.skipIf(!testDatabaseUrl)('clustering-repo (integration)', () => {
     headline: string;
     body?: string;
     receivedAt: Date;
+    meta?: Record<string, unknown>;
   }): Promise<AttachItemInput> {
     const id = newId();
     const hash = contentHash(input.headline, input.body);
@@ -90,6 +91,7 @@ describe.skipIf(!testDatabaseUrl)('clustering-repo (integration)', () => {
       payloadRef: `test/${id}.json`,
       contentHash: hash,
       receivedAt: input.receivedAt,
+      ...(input.meta !== undefined ? { meta: input.meta } : {}),
     });
     return {
       id,
@@ -257,6 +259,133 @@ describe.skipIf(!testDatabaseUrl)('clustering-repo (integration)', () => {
 
     expect(second.isNew).toBe(true);
     expect(second.clusterId).not.toBe(first.clusterId);
+  });
+
+  // Templated EDGAR headlines: same form-type boilerplate, different filers.
+  // Trigram similarity between these scores above the threshold, which is the
+  // exact failure mode the CIK guard exists for (2,269 mixed-CIK clusters
+  // measured before the guard). The tests assert the similarity really is
+  // above threshold so they cannot rot into tautologies if the fixtures drift.
+  const EDGAR_ACME = '8-K - American Realty Investors Inc (Filer)';
+  const EDGAR_OTHER = '8-K - American Realty Capital Trust Inc (Filer)';
+
+  async function trigramSimilarity(a: string, b: string): Promise<number> {
+    const result = await db.$client.query<{ sim: number }>(
+      'select similarity($1, $2) as sim',
+      [normalizeText(a), normalizeText(b)],
+    );
+    return result.rows[0]?.sim ?? 0;
+  }
+
+  it('never merges items with different CIKs, even above the similarity threshold', async () => {
+    expect(await trigramSimilarity(EDGAR_ACME, EDGAR_OTHER)).toBeGreaterThanOrEqual(
+      HEADLINE_SIMILARITY_THRESHOLD,
+    );
+
+    const sourceId = await seedSource('edgar_8k');
+    const acme = await seedItem({
+      sourceId,
+      headline: EDGAR_ACME,
+      receivedAt: T0,
+      meta: { cik: '0000778176' },
+    });
+    const other = await seedItem({
+      sourceId,
+      headline: EDGAR_OTHER,
+      receivedAt: minutesAfterT0(3),
+      meta: { cik: '0001234567' },
+    });
+
+    const first = await attachItemToCluster(db, acme);
+    const second = await attachItemToCluster(db, other);
+
+    expect(second.isNew).toBe(true);
+    expect(second.clusterId).not.toBe(first.clusterId);
+  });
+
+  it('still attaches same-CIK near-duplicates to one cluster', async () => {
+    const sourceId = await seedSource('edgar_8k');
+    const first = await seedItem({
+      sourceId,
+      headline: EDGAR_ACME,
+      receivedAt: T0,
+      meta: { cik: '0000778176' },
+    });
+    const followUp = await seedItem({
+      sourceId,
+      headline: '8-K/A - American Realty Investors Inc (Filer)',
+      receivedAt: minutesAfterT0(7),
+      meta: { cik: '0000778176' },
+    });
+
+    const a = await attachItemToCluster(db, first);
+    const b = await attachItemToCluster(db, followUp);
+
+    expect(b.isNew).toBe(false);
+    expect(b.clusterId).toBe(a.clusterId);
+  });
+
+  it('blocks a different-CIK item on the exact content-hash path too', async () => {
+    const [sourceA, sourceB] = await Promise.all([seedSource('edgar_8k'), seedSource('rss_echo')]);
+    // Identical text (same content hash) but the meta names a different filer.
+    const original = await seedItem({
+      sourceId: sourceA,
+      headline: EDGAR_ACME,
+      receivedAt: T0,
+      meta: { cik: '0000778176' },
+    });
+    const impostor = await seedItem({
+      sourceId: sourceB,
+      headline: EDGAR_ACME,
+      receivedAt: minutesAfterT0(2),
+      meta: { cik: '0001234567' },
+    });
+    expect(impostor.contentHash).toBe(original.contentHash);
+
+    const first = await attachItemToCluster(db, original);
+    const second = await attachItemToCluster(db, impostor);
+
+    expect(second.isNew).toBe(true);
+    expect(second.clusterId).not.toBe(first.clusterId);
+  });
+
+  it('keeps pre-guard behavior for items without a cik', async () => {
+    const sourceId = await seedSource('edgar_8k');
+    // Cluster anchored by a cik-carrying item; a cik-less near-dup still joins.
+    const withCik = await seedItem({
+      sourceId,
+      headline: EDGAR_ACME,
+      receivedAt: T0,
+      meta: { cik: '0000778176' },
+    });
+    const noCik = await seedItem({
+      sourceId,
+      headline: EDGAR_OTHER,
+      receivedAt: minutesAfterT0(4),
+    });
+
+    const first = await attachItemToCluster(db, withCik);
+    const second = await attachItemToCluster(db, noCik);
+
+    expect(second.isNew).toBe(false);
+    expect(second.clusterId).toBe(first.clusterId);
+
+    // And the mirror: a cik-carrying item may join a cluster holding no ciks.
+    const noCikAnchor = await seedItem({
+      sourceId,
+      headline: 'Globex Industries recalls smart thermostats over fire risk',
+      receivedAt: T0,
+    });
+    const cikJoiner = await seedItem({
+      sourceId,
+      headline: 'Globex Industries recalls smart thermostats over fire risks',
+      receivedAt: minutesAfterT0(6),
+      meta: { cik: '0009999999' },
+    });
+    const anchor = await attachItemToCluster(db, noCikAnchor);
+    const joined = await attachItemToCluster(db, cikJoiner);
+    expect(joined.isNew).toBe(false);
+    expect(joined.clusterId).toBe(anchor.clusterId);
   });
 
   it('closeStaleClusters closes silent clusters, which stop attracting attaches', async () => {

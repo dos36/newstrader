@@ -1,5 +1,6 @@
 import { newId, normalizeText } from '@newstrader/core';
 import { and, desc, eq, gte, lt, ne, sql } from 'drizzle-orm';
+import type { SQLWrapper } from 'drizzle-orm';
 import type { Db } from './client.js';
 import { newsClusterItems, newsClusters, rawNewsItems } from './schema.js';
 
@@ -11,6 +12,12 @@ import { newsClusterItems, newsClusters, rawNewsItems } from './schema.js';
  *   2. best open cluster in a 48h window by pg_trgm similarity over
  *      normalized headlines, above threshold → attach
  *   3. otherwise mint a new cluster anchored on this item
+ *
+ * CIK guard (steps 1 and 2): an item carrying meta->>'cik' never attaches to a
+ * cluster that already holds a DIFFERENT cik. Templated EDGAR headlines
+ * ("8-K - COMPANY (Filer)") score above the trigram threshold across unrelated
+ * companies — measured 2,269 mixed-CIK clusters (9.4% of EDGAR clusters)
+ * before this guard. Items without a cik keep the pre-guard behavior.
  *
  * Every path runs in ONE transaction under a global advisory lock so two
  * concurrent Lambdas processing echoes of the same story cannot mint duplicate
@@ -74,6 +81,33 @@ export async function attachItemToCluster(db: Db, item: AttachItemInput): Promis
       return { clusterId: existingRow.clusterId, isNew: false, similarity: existingRow.similarity };
     }
 
+    // CIK guard input: read the item's own cik from its persisted row (the FK
+    // on news_cluster_items guarantees the row exists). Reading it here instead
+    // of widening AttachItemInput keeps every caller — Lambda, CLI, tests — on
+    // the same source of truth.
+    const itemCikRows = await tx
+      .select({ cik: sql<string | null>`${rawNewsItems.meta} ->> 'cik'` })
+      .from(rawNewsItems)
+      .where(eq(rawNewsItems.id, item.id))
+      .limit(1);
+    const itemCik = itemCikRows[0]?.cik ?? null;
+
+    // True when the cluster holds no item whose cik differs from this item's.
+    // Aliased subquery: step 1's outer query already joins raw_news_items /
+    // news_cluster_items, so bare table refs would collide. Cik-less items in
+    // the cluster never block, and a cik-less incoming item passes vacuously.
+    const cikGuard = (clusterIdCol: SQLWrapper) =>
+      itemCik === null
+        ? sql`true`
+        : sql`not exists (
+            select 1
+              from news_cluster_items guard_ci
+              join raw_news_items guard_ri on guard_ri.id = guard_ci.item_id
+             where guard_ci.cluster_id = ${clusterIdCol}
+               and guard_ri.meta ->> 'cik' is not null
+               and guard_ri.meta ->> 'cik' <> ${itemCik}
+          )`;
+
     // Step 1: exact dup — another raw item with the same content_hash is
     // already clustered → same story, similarity 1.0.
     const exact = await tx
@@ -84,7 +118,13 @@ export async function attachItemToCluster(db: Db, item: AttachItemInput): Promis
       .from(rawNewsItems)
       .innerJoin(newsClusterItems, eq(newsClusterItems.itemId, rawNewsItems.id))
       .innerJoin(newsClusters, eq(newsClusters.id, newsClusterItems.clusterId))
-      .where(and(eq(rawNewsItems.contentHash, item.contentHash), ne(rawNewsItems.id, item.id)))
+      .where(
+        and(
+          eq(rawNewsItems.contentHash, item.contentHash),
+          ne(rawNewsItems.id, item.id),
+          cikGuard(newsClusterItems.clusterId),
+        ),
+      )
       .limit(1);
     const exactRow = exact[0];
     if (exactRow) {
@@ -118,6 +158,7 @@ export async function attachItemToCluster(db: Db, item: AttachItemInput): Promis
           gte(newsClusters.firstReceivedAt, windowStart),
           sql`${newsClusters.normalizedHeadline} % ${normalizedHeadline}`,
           gte(simExpr, HEADLINE_SIMILARITY_THRESHOLD),
+          cikGuard(newsClusters.id),
         ),
       )
       .orderBy(desc(simExpr))
