@@ -126,3 +126,14 @@ export type MacroSector = (typeof MACRO_SECTORS)[number];
  * honest way to express it.
  */
 export const MAX_SECTOR_EXPOSURES = 4;
+
+/**
+ * Upper bound on companies the discovery contract may name for one story.
+ *
+ * Three, by explicit product decision (the operator asked for "a list of
+ * companies, cap to 3"), and the cap serves the same anti-hedging purpose as
+ * {@link MAX_SECTOR_EXPOSURES}: a story that genuinely exposes more than a
+ * handful of names equally is a sector or market story, and the honest answer
+ * under this contract is `none`, not three arbitrary picks from a crowd.
+ */
+export const MAX_COMPANY_EXPOSURES = 3;

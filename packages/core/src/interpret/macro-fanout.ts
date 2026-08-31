@@ -1,4 +1,8 @@
-import type { MacroInterpretation, SectorExposure } from './macro-schema.js';
+import type {
+  DiscoveryInterpretation,
+  MacroInterpretation,
+  SectorExposure,
+} from './macro-schema.js';
 import type { MacroSector } from './macro-taxonomy.js';
 
 /**
@@ -85,6 +89,69 @@ export function macroSignalRows(judgment: MacroInterpretation): MacroSignalRow[]
 function scaleMove(peakMoveBps: number, materiality: number, peak: number): number {
   if (peak <= 0) return 0;
   return Math.round(peakMoveBps * (materiality / peak) * 100) / 100;
+}
+
+/** One `llm_signals` row implied by a discovery judgment — company-scoped. */
+export interface DiscoverySignalRow {
+  scope: 'company';
+  instrumentId: string;
+  symbol: string;
+  direction: 'bullish' | 'bearish' | 'neutral';
+  materiality: number;
+  expectedMoveBps: number;
+}
+
+export interface DiscoveryFanoutResult {
+  rows: DiscoverySignalRow[];
+  /**
+   * Symbols the model returned that are NOT in the universe it was shown —
+   * hallucinations that survived the prompt fence. Dropped from `rows`, but
+   * surfaced so the sweep can count them: the hallucination rate is a quality
+   * metric of the prompt, and silently discarding it would hide a regression.
+   */
+  unknownSymbols: string[];
+}
+
+/**
+ * Turn one discovery judgment into company signal rows — the third and final
+ * anti-hallucination fence.
+ *
+ * The prompt says "symbols from the candidate list only" and the wire schema
+ * bounds the string, but neither can PROVE the symbol came from the list. This
+ * can: every exposure is resolved against the exact universe the sweep
+ * rendered into the prompt, and anything unresolved is dropped and reported
+ * rather than persisted. Matching is case-insensitive on symbol because that
+ * is the one liberty models actually take with tickers; anything beyond that
+ * (a near-miss name, a delisted ticker) is treated as the hallucination it is.
+ *
+ * `none` yields zero rows for the same reason {@link macroSignalRows} gives:
+ * the judgment is recorded in the attempt log, not as a tradeable-looking row.
+ */
+export function discoverySignalRows(
+  judgment: DiscoveryInterpretation,
+  universe: readonly FanoutInstrument[],
+): DiscoveryFanoutResult {
+  if (judgment.market_scope === 'none') return { rows: [], unknownSymbols: [] };
+
+  const bySymbol = new Map(universe.map((i) => [i.symbol.toUpperCase(), i]));
+  const rows: DiscoverySignalRow[] = [];
+  const unknownSymbols: string[] = [];
+  for (const exposure of judgment.company_exposures) {
+    const match = bySymbol.get(exposure.symbol.toUpperCase());
+    if (match === undefined) {
+      unknownSymbols.push(exposure.symbol);
+      continue;
+    }
+    rows.push({
+      scope: 'company',
+      instrumentId: match.instrumentId,
+      symbol: match.symbol,
+      direction: exposure.direction,
+      materiality: exposure.materiality,
+      expectedMoveBps: exposure.expected_move_bps,
+    });
+  }
+  return { rows, unknownSymbols };
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   REACTION_HORIZONS,
   instruments,
   itemInstrumentLinks,
+  llmSignals,
   newsClusterItems,
   newsClusters,
   priceBars1d,
@@ -194,7 +195,7 @@ export async function measureReactions(
     pubAnchorRows.map((row) => [row.clusterId, new Date(row.pubAnchor)]),
   );
 
-  const pairRows = await db
+  const linkPairRows = await db
     .selectDistinct({
       clusterId: newsClusterItems.clusterId,
       instrumentId: itemInstrumentLinks.instrumentId,
@@ -209,6 +210,32 @@ export async function measureReactions(
         gte(itemInstrumentLinks.confidence, MIN_LINK_CONFIDENCE),
       ),
     );
+  // Second pair source: company-scope SIGNALS. The discovery contract names
+  // instruments the resolver never linked (world news carries no company name
+  // for the dictionary to match), so link-derived pairs alone would leave
+  // every discovered signal permanently unmeasured — an unevaluable signal is
+  // exactly what invariant 6 exists to forbid. Signals are the more
+  // fundamental source anyway: measurement exists to score them.
+  const signalPairRows = await db
+    .selectDistinct({
+      clusterId: llmSignals.clusterId,
+      instrumentId: sql<string>`${llmSignals.instrumentId}`,
+      assetClass: instruments.assetClass,
+    })
+    .from(llmSignals)
+    .innerJoin(instruments, eq(instruments.id, llmSignals.instrumentId))
+    .where(
+      and(
+        inArray(llmSignals.clusterId, [...anchorByCluster.keys()]),
+        eq(llmSignals.scope, 'company'),
+        isNotNull(llmSignals.instrumentId),
+      ),
+    );
+  const pairKeySet = new Set(linkPairRows.map((row) => `${row.clusterId}:${row.instrumentId}`));
+  const pairRows = [
+    ...linkPairRows,
+    ...signalPairRows.filter((row) => !pairKeySet.has(`${row.clusterId}:${row.instrumentId}`)),
+  ];
   totals.pairs = pairRows.length;
 
   const benchmarkRows = await db

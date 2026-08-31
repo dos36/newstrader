@@ -3,12 +3,17 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
+  discoverySignalRows,
   macroSignalRows,
   sectorFanoutWeights,
   instrumentsForSector,
   type FanoutInstrument,
 } from './macro-fanout.js';
-import { buildMacroUserPrompt, type MacroInterpretContext } from './macro-prompt.js';
+import {
+  buildMacroUserPrompt,
+  buildUniverseBlock,
+  type MacroInterpretContext,
+} from './macro-prompt.js';
 import {
   CURRENT_MACRO_PROMPT_VERSION,
   getMacroPromptDefinition,
@@ -16,14 +21,18 @@ import {
   MACRO_PROMPT_REGISTRY,
 } from './macro-registry.js';
 import {
+  discoveryCoherenceError,
+  DiscoveryInterpretationSchema,
   macroCoherenceError,
   MacroInterpretationSchema,
+  type DiscoveryInterpretation,
   type MacroInterpretation,
 } from './macro-schema.js';
 import {
   MACRO_EVENT_TYPE_DEFINITIONS,
   MACRO_EVENT_TYPES,
   MACRO_SECTORS,
+  MAX_COMPANY_EXPOSURES,
   MAX_SECTOR_EXPOSURES,
 } from './macro-taxonomy.js';
 import { PROMPT_REGISTRY } from './registry.js';
@@ -35,6 +44,8 @@ import { PROMPT_REGISTRY } from './registry.js';
  */
 const V1M_SYSTEM_PROMPT_SHA256 =
   '8b21637988bee420cd3342e01a15d4befb652dc9d36939d9ed6fda7c860983e9';
+const V2M_SYSTEM_PROMPT_SHA256 =
+  '1a73d0fdc3455a9fc88842170cb594e49dee5611c998267efa97a867aad7488d';
 
 const VALID: MacroInterpretation = {
   macro_event_type: 'monetary_policy',
@@ -181,10 +192,24 @@ describe('macro prompt registry', () => {
     expect(isMacroPromptVersion('v3')).toBe(false);
   });
 
-  it('current version exists and targets sonnet', () => {
+  it('current version is the discovery contract and targets sonnet', () => {
     const def = getMacroPromptDefinition(CURRENT_MACRO_PROMPT_VERSION);
+    expect(CURRENT_MACRO_PROMPT_VERSION).toBe('v2m');
+    expect(def.contract).toBe('discovery');
     expect(def.modelId).toBe('claude-sonnet-5');
     expect(def.maxTokens).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it('pins the v2m system prompt text (edit = mint a new version, never mutate v2m)', () => {
+    const def = getMacroPromptDefinition('v2m');
+    const hash = createHash('sha256').update(def.systemPrompt, 'utf8').digest('hex');
+    expect(hash).toBe(V2M_SYSTEM_PROMPT_SHA256);
+  });
+
+  it('keeps v1m registered as the sector arm', () => {
+    // Zero v1m rows existed when v2m superseded it, so nothing was re-labelled
+    // — but the arm stays runnable for a later sector-vs-discovery comparison.
+    expect(getMacroPromptDefinition('v1m').contract).toBe('sector');
   });
 
   it('throws on unknown versions', () => {
@@ -407,5 +432,206 @@ describe('sector fanout', () => {
         materiality: 0.5,
       }),
     ).toEqual([]);
+  });
+});
+
+// ----------------------------------------------------------------- discovery --
+
+const VALID_DISCOVERY: DiscoveryInterpretation = {
+  macro_event_type: 'commodity_supply',
+  market_scope: 'companies',
+  company_exposures: [
+    { symbol: 'AAA', direction: 'bullish', materiality: 0.6, expected_move_bps: 120 },
+  ],
+  horizon: '1d',
+  already_expected: false,
+  materiality: 0.6,
+  confidence: 0.5,
+  reasoning: 'Supply of the input fell; the one candidate producing it elsewhere gains pricing power.',
+};
+
+describe('DiscoveryInterpretationSchema', () => {
+  it('accepts a valid discovery judgment and a none', () => {
+    expect(() => DiscoveryInterpretationSchema.parse(VALID_DISCOVERY)).not.toThrow();
+    expect(() =>
+      DiscoveryInterpretationSchema.parse({
+        ...VALID_DISCOVERY,
+        market_scope: 'none',
+        company_exposures: [],
+        materiality: 0,
+      }),
+    ).not.toThrow();
+  });
+
+  it('caps companies at the product limit of 3', () => {
+    const four = ['A', 'B', 'C', 'D'].map((s) => ({
+      symbol: s,
+      direction: 'bearish' as const,
+      materiality: 0.4,
+      expected_move_bps: 50,
+    }));
+    expect(MAX_COMPANY_EXPOSURES).toBe(3);
+    expect(() =>
+      DiscoveryInterpretationSchema.parse({ ...VALID_DISCOVERY, company_exposures: four }),
+    ).toThrow();
+  });
+
+  it('rejects unknown keys and out-of-range moves (strict contract)', () => {
+    expect(() =>
+      DiscoveryInterpretationSchema.parse({ ...VALID_DISCOVERY, tickers: ['AAA'] }),
+    ).toThrow();
+    expect(() =>
+      DiscoveryInterpretationSchema.parse({
+        ...VALID_DISCOVERY,
+        company_exposures: [
+          { symbol: 'AAA', direction: 'bullish', materiality: 0.6, expected_move_bps: 6000 },
+        ],
+      }),
+    ).toThrow();
+  });
+});
+
+describe('discoveryCoherenceError', () => {
+  it('passes coherent judgments', () => {
+    expect(discoveryCoherenceError(VALID_DISCOVERY)).toBeNull();
+  });
+
+  it('rejects the self-contradictions', () => {
+    expect(
+      discoveryCoherenceError({ ...VALID_DISCOVERY, company_exposures: [] }),
+    ).toMatch(/empty/);
+    expect(
+      discoveryCoherenceError({ ...VALID_DISCOVERY, market_scope: 'none' }),
+    ).toMatch(/company_exposures were given/);
+    expect(
+      discoveryCoherenceError({
+        ...VALID_DISCOVERY,
+        market_scope: 'none',
+        company_exposures: [],
+        materiality: 0.7,
+      }),
+    ).toMatch(/materiality/);
+  });
+
+  it('rejects the same symbol twice, case-insensitively', () => {
+    expect(
+      discoveryCoherenceError({
+        ...VALID_DISCOVERY,
+        company_exposures: [
+          { symbol: 'AAA', direction: 'bullish', materiality: 0.6, expected_move_bps: 100 },
+          { symbol: 'aaa', direction: 'bearish', materiality: 0.2, expected_move_bps: 40 },
+        ],
+      }),
+    ).toMatch(/twice/);
+  });
+});
+
+describe('discoverySignalRows', () => {
+  const universe: FanoutInstrument[] = [
+    { instrumentId: 'i1', symbol: 'AAA', sectorApprox: 'Materials' },
+    { instrumentId: 'i2', symbol: 'BBB', sectorApprox: 'Industrials' },
+  ];
+
+  it('writes nothing for none', () => {
+    expect(
+      discoverySignalRows(
+        { ...VALID_DISCOVERY, market_scope: 'none', company_exposures: [], materiality: 0 },
+        universe,
+      ),
+    ).toEqual({ rows: [], unknownSymbols: [] });
+  });
+
+  it('resolves symbols to instrument ids, case-insensitively', () => {
+    const { rows, unknownSymbols } = discoverySignalRows(
+      {
+        ...VALID_DISCOVERY,
+        company_exposures: [
+          { symbol: 'aaa', direction: 'bullish', materiality: 0.6, expected_move_bps: 120 },
+          { symbol: 'BBB', direction: 'bearish', materiality: 0.3, expected_move_bps: 40 },
+        ],
+      },
+      universe,
+    );
+    expect(unknownSymbols).toEqual([]);
+    expect(rows).toEqual([
+      {
+        scope: 'company',
+        instrumentId: 'i1',
+        symbol: 'AAA',
+        direction: 'bullish',
+        materiality: 0.6,
+        expectedMoveBps: 120,
+      },
+      {
+        scope: 'company',
+        instrumentId: 'i2',
+        symbol: 'BBB',
+        direction: 'bearish',
+        materiality: 0.3,
+        expectedMoveBps: 40,
+      },
+    ]);
+  });
+
+  it('drops hallucinated symbols and reports them instead of persisting', () => {
+    // The final fence. The prompt forbids outside symbols and the schema
+    // bounds the string, but only this check PROVES membership in the exact
+    // universe the model was shown.
+    const { rows, unknownSymbols } = discoverySignalRows(
+      {
+        ...VALID_DISCOVERY,
+        company_exposures: [
+          { symbol: 'AAA', direction: 'bullish', materiality: 0.6, expected_move_bps: 120 },
+          { symbol: 'RHM', direction: 'bullish', materiality: 0.8, expected_move_bps: 300 },
+        ],
+      },
+      universe,
+    );
+    expect(rows.map((r) => r.symbol)).toEqual(['AAA']);
+    expect(unknownSymbols).toEqual(['RHM']);
+  });
+});
+
+describe('buildUniverseBlock', () => {
+  const candidates = [
+    { symbol: 'BBB', name: 'Beta Corp', sectorApprox: 'Industrials' },
+    { symbol: 'AAA', name: 'Alpha Inc', sectorApprox: null },
+  ];
+
+  it('is deterministic and sorted, so identical membership states cache-hit', () => {
+    const first = buildUniverseBlock(candidates);
+    expect(buildUniverseBlock([...candidates].reverse())).toBe(first);
+    expect(first.indexOf('AAA')).toBeLessThan(first.indexOf('BBB'));
+    expect(first).toContain('CANDIDATE UNIVERSE (2 instruments');
+    expect(first).toContain('BBB | Beta Corp | Industrials');
+    expect(first).toContain('AAA | Alpha Inc');
+  });
+});
+
+describe('v2m prompt content', () => {
+  it('keeps the generality guards: none-default, reflex chains, no scenario nouns', () => {
+    const text = getMacroPromptDefinition('v2m').systemPrompt;
+    expect(text).toContain('MOST COMMON CORRECT ANSWER');
+    expect(text).toContain('reflex chains');
+    expect(text).toContain('Second-order effects decay fast');
+    const lower = text.toLowerCase();
+    for (const scenario of ['nepal', 'hydropower', 'monsoon', 'germany', 'ukraine']) {
+      expect(lower).not.toContain(scenario);
+    }
+  });
+
+  it('forbids fame-based picks and out-of-universe symbols in so many words', () => {
+    const text = getMacroPromptDefinition('v2m').systemPrompt;
+    expect(text).toContain('fame is not exposure');
+    expect(text).toContain('never use a symbol from outside it');
+  });
+
+  it('teaches restraint: a whole-market event has no 3-company answer', () => {
+    // The contract's deliberate narrowing. Without this instruction the model
+    // answers a rate cut with three famous names, which scores three companies
+    // for a judgment about the entire market.
+    const text = getMacroPromptDefinition('v2m').systemPrompt;
+    expect(text).toContain('uniformly-affected crowd');
+    expect(text).toContain('whole-market move is the benchmark');
   });
 });

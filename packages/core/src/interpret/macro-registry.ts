@@ -1,4 +1,5 @@
 import {
+  buildDiscoverySystemPromptV2,
   buildMacroSystemPromptV1,
   buildMacroUserPrompt,
   type MacroInterpretContext,
@@ -25,6 +26,20 @@ import {
  */
 export interface MacroPromptDefinition {
   version: string;
+  /**
+   * Which OUTPUT CONTRACT this version speaks — part of the contract like
+   * everything else here, because it decides which schema validates the
+   * response and which rows the sweep writes:
+   *
+   *   - 'sector':    MacroInterpretationSchema → scope='sector'/'macro' rows,
+   *                  fanned out to equal-weight baskets downstream.
+   *   - 'discovery': DiscoveryInterpretationSchema → scope='company' rows with
+   *                  real instrument ids, picked from the point-in-time
+   *                  candidate universe rendered into the prompt. These flow
+   *                  through the SAME measurement and evaluation as
+   *                  resolver-linked company signals.
+   */
+  contract: 'sector' | 'discovery';
   systemPrompt: string;
   buildUserPrompt: (context: MacroInterpretContext) => string;
   /** Exact Anthropic model id stamped into llm_signals.model_id. */
@@ -60,7 +75,32 @@ export const MACRO_PROMPT_REGISTRY: Readonly<Record<string, MacroPromptDefinitio
    */
   v1m: {
     version: 'v1m',
+    contract: 'sector',
     systemPrompt: buildMacroSystemPromptV1(),
+    buildUserPrompt: buildMacroUserPrompt,
+    modelId: 'claude-sonnet-5',
+    effort: 'medium',
+    maxTokens: 10_000,
+  },
+  /**
+   * v2m — company discovery, superseding v1m as current BEFORE v1m ever ran a
+   * live pass (zero v1m rows exist, so the switch re-labels nothing).
+   *
+   * The product decision it encodes: the operator wants "which companies does
+   * this world news move, capped at 3, with a prediction each" — company-scoped
+   * rows that the existing measurer, calibration report, and `--sources nyt`
+   * cut can score, instead of sector rows that need a basket measurer built
+   * first. v1m stays registered as the sector-contract arm for a later
+   * sector-vs-discovery comparison.
+   *
+   * Same model/effort/maxTokens as v1m and v3, for the same reasons those
+   * chose them: viability is answered at the cheapest honest setting, and each
+   * different setting is a new registry entry, not a flag.
+   */
+  v2m: {
+    version: 'v2m',
+    contract: 'discovery',
+    systemPrompt: buildDiscoverySystemPromptV2(),
     buildUserPrompt: buildMacroUserPrompt,
     modelId: 'claude-sonnet-5',
     effort: 'medium',
@@ -68,7 +108,7 @@ export const MACRO_PROMPT_REGISTRY: Readonly<Record<string, MacroPromptDefinitio
   },
 };
 
-export const CURRENT_MACRO_PROMPT_VERSION = 'v1m';
+export const CURRENT_MACRO_PROMPT_VERSION = 'v2m';
 
 export function getMacroPromptDefinition(version: string): MacroPromptDefinition {
   const def = MACRO_PROMPT_REGISTRY[version];

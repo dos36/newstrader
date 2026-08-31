@@ -1,9 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import {
+  discoveryCoherenceError,
+  DiscoveryInterpretationSchema,
   InterpretationSchema,
   macroCoherenceError,
   MacroInterpretationSchema,
+  type DiscoveryInterpretation,
   type Interpretation,
   type MacroInterpretation,
 } from '@newstrader/core';
@@ -27,6 +30,17 @@ import type { LlmUsage } from './cost.js';
  */
 export interface LlmCallRequest {
   systemPrompt: string;
+  /**
+   * Optional second system block, sent with its own cache breakpoint.
+   *
+   * Exists for large per-run-stable context — the discovery contract's
+   * candidate universe (~3.5k tokens). In the user prompt it would bill fresh
+   * on every call and dominate the stage's input cost; as a cached block it
+   * bills ~0.1× after the first call and re-caches only when its bytes change
+   * (index membership changes rarely). Callers must render it
+   * deterministically for exactly that reason.
+   */
+  cachedContext?: string;
   userPrompt: string;
   modelId: string;
   maxTokens: number;
@@ -45,10 +59,21 @@ export interface LlmCallOutcome {
   latencyMs: number;
 }
 
-/** {@link LlmCallOutcome} for the macro contract. */
+/** {@link LlmCallOutcome} for the macro (sector) contract. */
 export interface MacroLlmCallOutcome {
   /** Validated AND coherence-checked judgment, or null on a content failure. */
   interpretation: MacroInterpretation | null;
+  failure: string | null;
+  stopReason: string | null;
+  usage: LlmUsage;
+  rawResponse: unknown;
+  latencyMs: number;
+}
+
+/** {@link LlmCallOutcome} for the discovery contract. */
+export interface DiscoveryLlmCallOutcome {
+  /** Validated AND coherence-checked judgment, or null on a content failure. */
+  interpretation: DiscoveryInterpretation | null;
   failure: string | null;
   stopReason: string | null;
   usage: LlmUsage;
@@ -71,6 +96,8 @@ export interface LlmClient {
    * rather than silently interpreting nothing.
    */
   interpretMacro?(request: LlmCallRequest): Promise<MacroLlmCallOutcome>;
+  /** Same optionality story as {@link interpretMacro}, for the discovery contract. */
+  interpretDiscovery?(request: LlmCallRequest): Promise<DiscoveryLlmCallOutcome>;
 }
 
 /**
@@ -115,10 +142,10 @@ export class AnthropicLlmClient implements LlmClient {
   }
 
   /**
-   * The MACRO variant — same transport, same caching, different output
-   * contract. Separate method rather than a schema parameter on
-   * {@link interpret} so each call site stays statically typed to the shape it
-   * actually gets back; a `schema` argument would hand every caller an
+   * The MACRO (sector-contract) variant — same transport, same caching,
+   * different output contract. Separate method rather than a schema parameter
+   * on {@link interpret} so each call site stays statically typed to the shape
+   * it actually gets back; a `schema` argument would hand every caller an
    * `unknown` to narrow, and the first thing anyone does with that is cast.
    */
   async interpretMacro(request: LlmCallRequest): Promise<MacroLlmCallOutcome> {
@@ -130,6 +157,22 @@ export class AnthropicLlmClient implements LlmClient {
     // required only when that one has this value", so without this a
     // structurally valid but self-contradicting judgment would persist.
     const incoherent = macroCoherenceError(outcome.parsed);
+    if (incoherent !== null) {
+      return { ...outcome, interpretation: null, failure: `incoherent answer: ${incoherent}` };
+    }
+    return { ...outcome, interpretation: outcome.parsed };
+  }
+
+  /**
+   * The DISCOVERY variant — world news in, up to three candidate companies
+   * out. Coherence at the boundary for the same reason as interpretMacro; the
+   * remaining fence (symbols must come from the rendered universe) lives in
+   * the sweep, which is the only party that knows what it rendered.
+   */
+  async interpretDiscovery(request: LlmCallRequest): Promise<DiscoveryLlmCallOutcome> {
+    const outcome = await this.call(request, DiscoveryInterpretationSchema);
+    if (outcome.parsed === null) return { ...outcome, interpretation: null };
+    const incoherent = discoveryCoherenceError(outcome.parsed);
     if (incoherent !== null) {
       return { ...outcome, interpretation: null, failure: `incoherent answer: ${incoherent}` };
     }
@@ -159,6 +202,18 @@ export class AnthropicLlmClient implements LlmClient {
           text: request.systemPrompt,
           cache_control: { type: 'ephemeral' },
         },
+        // The optional cached-context block gets its OWN breakpoint: the prompt
+        // above stays a hit even on the (rare) call where this block's bytes
+        // changed and had to be re-written.
+        ...(request.cachedContext !== undefined
+          ? [
+              {
+                type: 'text' as const,
+                text: request.cachedContext,
+                cache_control: { type: 'ephemeral' as const },
+              },
+            ]
+          : []),
       ],
       output_config: {
         effort: request.effort,

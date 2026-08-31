@@ -1,8 +1,11 @@
 import {
+  buildUniverseBlock,
   CURRENT_MACRO_PROMPT_VERSION,
+  discoverySignalRows,
   getMacroPromptDefinition,
   INTERPRET_OBSERVATION_LAG_MS,
   macroSignalRows,
+  type FanoutInstrument,
   type MacroInterpretContext,
   type RawStore,
 } from '@newstrader/core';
@@ -21,7 +24,12 @@ import {
   utcDayStart,
 } from './interpret-repo.js';
 import { extractLede } from './lede.js';
-import { loadMacroCandidates, macroAttemptKey, type MacroCandidate } from './macro-repo.js';
+import {
+  loadMacroCandidates,
+  loadSectorUniverseAsOf,
+  macroAttemptKey,
+  type MacroCandidate,
+} from './macro-repo.js';
 
 /**
  * The MACRO interpret sweep — unlinked clusters → one LLM call each → zero or
@@ -94,6 +102,12 @@ export interface MacroSweepResult {
   noMechanism: number;
   duplicates: number;
   failures: number;
+  /**
+   * Discovery only: symbols the model returned from OUTSIDE the candidate
+   * universe it was shown, dropped before persistence. The stage's
+   * hallucination rate — worth watching on every pass, not just in audits.
+   */
+  unknownSymbols: number;
   spendCapReached: boolean;
   spentTodayUsd: number;
   transportError: string | null;
@@ -133,6 +147,7 @@ export async function macroInterpretSweep(
     noMechanism: 0,
     duplicates: 0,
     failures: 0,
+    unknownSymbols: 0,
     spendCapReached: false,
     spentTodayUsd: 0,
     transportError: null,
@@ -148,11 +163,19 @@ export async function macroInterpretSweep(
 
   // Checked before any candidate is loaded so the operator finds out from a
   // clear error rather than from a sweep that examines rows and writes nothing.
+  // Which method is required depends on the version's contract.
   const interpretMacro = deps.llm.interpretMacro?.bind(deps.llm);
-  if (interpretMacro === undefined) {
+  const interpretDiscovery = deps.llm.interpretDiscovery?.bind(deps.llm);
+  if (prompt.contract === 'sector' && interpretMacro === undefined) {
     throw new Error(
       `macroInterpretSweep: transport '${transport}' does not implement interpretMacro — ` +
-        'the macro output contract is unavailable on this client.',
+        `the sector output contract (${promptVersion}) is unavailable on this client.`,
+    );
+  }
+  if (prompt.contract === 'discovery' && interpretDiscovery === undefined) {
+    throw new Error(
+      `macroInterpretSweep: transport '${transport}' does not implement interpretDiscovery — ` +
+        `the discovery output contract (${promptVersion}) is unavailable on this client.`,
     );
   }
 
@@ -208,15 +231,49 @@ export async function macroInterpretSweep(
       transport,
     );
 
+    // Discovery: the candidate universe, loaded AS OF THE CLUSTER'S ANCHOR
+    // (invariant 5 — offering a company that was not yet a member would leak
+    // membership from the future). Rendered deterministically and sent as a
+    // second cached system block, so identical membership states bill at the
+    // cache-read rate across the run.
+    let universe: FanoutInstrument[] = [];
+    let cachedContext: string | undefined;
+    if (prompt.contract === 'discovery') {
+      const members = await loadSectorUniverseAsOf(db, candidate.anchorTs);
+      if (members.length === 0) {
+        throw new Error(
+          `macroInterpretSweep: point-in-time universe is empty as of ` +
+            `${candidate.anchorTs.toISOString()} — run universe:sync before a discovery pass; ` +
+            'an empty candidate list would make every judgment "none" for the wrong reason.',
+        );
+      }
+      universe = members.map((m) => ({
+        instrumentId: m.instrumentId,
+        symbol: m.symbol,
+        sectorApprox: m.sectorApprox,
+      }));
+      cachedContext = buildUniverseBlock(
+        members.map((m) => ({ symbol: m.symbol, name: m.name, sectorApprox: m.sectorApprox })),
+      );
+    }
+
+    const request = {
+      systemPrompt: prompt.systemPrompt,
+      ...(cachedContext !== undefined ? { cachedContext } : {}),
+      userPrompt,
+      modelId: prompt.modelId,
+      maxTokens: prompt.maxTokens,
+      effort: prompt.effort,
+    };
+
     let outcome;
     try {
-      outcome = await interpretMacro({
-        systemPrompt: prompt.systemPrompt,
-        userPrompt,
-        modelId: prompt.modelId,
-        maxTokens: prompt.maxTokens,
-        effort: prompt.effort,
-      });
+      // The undefined-checks above make the non-null assertions safe; a bind
+      // that was missing for the active contract has already thrown.
+      outcome =
+        prompt.contract === 'discovery'
+          ? await interpretDiscovery!(request)
+          : await interpretMacro!(request);
     } catch (error) {
       // Transport/infrastructure: abort the pass, burn NO attempt.
       result.transportError = error instanceof Error ? error.message : String(error);
@@ -236,6 +293,7 @@ export async function macroInterpretSweep(
       effort: prompt.effort,
       maxTokens: prompt.maxTokens,
       systemPrompt: prompt.systemPrompt,
+      ...(cachedContext !== undefined ? { cachedContext } : {}),
       userPrompt,
       observedAtIso: assembled.observedAt.toISOString(),
       response: outcome.rawResponse,
@@ -259,7 +317,39 @@ export async function macroInterpretSweep(
     }
 
     const judgment = outcome.interpretation;
-    const rows = macroSignalRows(judgment);
+
+    // Normalize both contracts to one row shape. For discovery this is also
+    // the last anti-hallucination fence: symbols are resolved against the
+    // exact universe rendered into THIS call's prompt, and anything unresolved
+    // is dropped and counted rather than persisted.
+    let rows: Array<{
+      scope: 'macro' | 'sector' | 'company';
+      sectorCode: string | null;
+      instrumentId: string | null;
+      direction: 'bullish' | 'bearish' | 'neutral';
+      materiality: number;
+      expectedMoveBps: number;
+    }>;
+    if ('company_exposures' in judgment) {
+      const fanned = discoverySignalRows(judgment, universe);
+      result.unknownSymbols += fanned.unknownSymbols.length;
+      if (judgment.market_scope === 'companies' && fanned.rows.length === 0) {
+        // Every named symbol was a hallucination. A content failure like a
+        // schema violation — burns one attempt, so a model that reliably
+        // invents symbols poisons the candidate instead of littering rows.
+        await recordAttemptFailure(db, {
+          signalKey: attemptKey,
+          error: `all symbols outside the candidate universe: ${fanned.unknownSymbols.join(', ')}`,
+          auditRef,
+          at: analyzedAt,
+        });
+        result.failures += 1;
+        continue;
+      }
+      rows = fanned.rows.map((row) => ({ ...row, sectorCode: null }));
+    } else {
+      rows = macroSignalRows(judgment).map((row) => ({ ...row, instrumentId: null }));
+    }
 
     if (rows.length === 0) {
       // `none` — a real, valuable answer. Booked as a TERMINAL attempt (at the
@@ -283,6 +373,7 @@ export async function macroInterpretSweep(
         clusterId: candidate.clusterId,
         scope: row.scope,
         ...(row.sectorCode !== null ? { sectorCode: row.sectorCode } : {}),
+        ...(row.instrumentId !== null ? { instrumentId: row.instrumentId } : {}),
         // The macro taxonomy is a separate vocabulary from EVENT_TYPES; it is
         // stamped into the same column because event_type is free text at the
         // DB level and the prompt_version tells a reader which vocabulary to

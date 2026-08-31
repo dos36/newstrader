@@ -195,13 +195,16 @@ export async function loadMacroCandidates(
 export async function loadSectorUniverseAsOf(
   db: Db,
   asOf: Date,
-): Promise<Array<{ instrumentId: string; symbol: string; sectorApprox: string | null }>> {
+): Promise<
+  Array<{ instrumentId: string; symbol: string; name: string; sectorApprox: string | null }>
+> {
   const result = await db.$client.query<{
     instrument_id: string;
     symbol: string;
+    name: string;
     sector_approx: string | null;
   }>(
-    `select distinct i.id as instrument_id, i.symbol, i.sector_approx
+    `select distinct i.id as instrument_id, i.symbol, i.name, i.sector_approx
        from index_membership m
        join instruments i on i.id = m.instrument_id
       where m.valid_from <= $1
@@ -212,6 +215,7 @@ export async function loadSectorUniverseAsOf(
   return result.rows.map((row) => ({
     instrumentId: row.instrument_id,
     symbol: row.symbol,
+    name: row.name,
     sectorApprox: row.sector_approx,
   }));
 }

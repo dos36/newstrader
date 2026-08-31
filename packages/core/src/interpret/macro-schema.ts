@@ -3,7 +3,12 @@
 // boundary use it; the rest of the repo stays on the classic v3 API.
 import { z } from 'zod/v4';
 
-import { MACRO_EVENT_TYPES, MACRO_SECTORS, MAX_SECTOR_EXPOSURES } from './macro-taxonomy.js';
+import {
+  MACRO_EVENT_TYPES,
+  MACRO_SECTORS,
+  MAX_COMPANY_EXPOSURES,
+  MAX_SECTOR_EXPOSURES,
+} from './macro-taxonomy.js';
 
 /**
  * One sector the model believes this event moves, and which way.
@@ -88,5 +93,77 @@ export function macroCoherenceError(value: MacroInterpretation): string | null {
   }
   const duplicates = new Set(value.sector_exposures.map((e) => e.sector)).size !== named;
   if (duplicates) return 'sector_exposures names the same sector twice';
+  return null;
+}
+
+// --------------------------------------------------------------- discovery --
+
+/**
+ * One company the model believes this event moves, and how.
+ *
+ * `symbol` is NOT free text in practice, though the wire schema cannot say so:
+ * the user prompt carries the point-in-time candidate universe, the system
+ * prompt forbids symbols from outside it, and the sweep validates every
+ * returned symbol against the exact universe it rendered — an unknown symbol
+ * is dropped and counted, never persisted. Three fences, because a
+ * hallucinated ticker that reaches `llm_signals` becomes a tradeable-looking
+ * row about a company nobody analysed.
+ *
+ * `expected_move_bps` is per-company and shares the company path's 5000
+ * ceiling, deliberately: these rows land as `scope='company'` next to the
+ * resolver-linked ones, and the same field must mean the same thing wherever
+ * it appears or per-event-type statistics stop being poolable.
+ */
+export const CompanyExposureSchema = z.strictObject({
+  symbol: z.string().min(1).max(12),
+  direction: z.enum(['bullish', 'bearish', 'neutral']),
+  materiality: z.number().min(0).max(1),
+  expected_move_bps: z.number().min(0).max(5000),
+});
+
+export type CompanyExposure = z.infer<typeof CompanyExposureSchema>;
+
+/**
+ * The DISCOVERY interpreter's output contract — world news in, at most
+ * {@link MAX_COMPANY_EXPOSURES} differentially-exposed companies out.
+ *
+ * The deliberate narrowing versus the sector contract: there is no 'broad'
+ * and no sector list. An event that moves everything equally has no company
+ * answer under this contract, and the honest response is `none` — naming
+ * three arbitrary members of a uniformly-affected crowd would score those
+ * three for a judgment the model never actually made about them.
+ */
+export const DiscoveryInterpretationSchema = z.strictObject({
+  macro_event_type: z.enum(MACRO_EVENT_TYPES),
+  market_scope: z.enum(['none', 'companies']),
+  company_exposures: z.array(CompanyExposureSchema).max(MAX_COMPANY_EXPOSURES),
+  horizon: z.enum(['intraday', '1d', '3d', '5d']),
+  already_expected: z.boolean(),
+  /** Story-level: how much the EVENT matters to whoever is exposed. */
+  materiality: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1),
+  reasoning: z.string().min(1).max(600),
+});
+
+export type DiscoveryInterpretation = z.infer<typeof DiscoveryInterpretationSchema>;
+
+/**
+ * Post-schema coherence for discovery answers — same poison-pill philosophy as
+ * {@link macroCoherenceError}: an internally contradictory judgment is a
+ * content failure, never repaired into a row.
+ */
+export function discoveryCoherenceError(value: DiscoveryInterpretation): string | null {
+  const named = value.company_exposures.length;
+  if (value.market_scope === 'companies' && named === 0) {
+    return 'market_scope=companies but company_exposures is empty';
+  }
+  if (value.market_scope === 'none' && named > 0) {
+    return `market_scope=none but ${String(named)} company_exposures were given`;
+  }
+  if (value.market_scope === 'none' && value.materiality > 0.1) {
+    return `market_scope=none but materiality is ${String(value.materiality)}`;
+  }
+  const symbols = value.company_exposures.map((e) => e.symbol.toUpperCase());
+  if (new Set(symbols).size !== named) return 'company_exposures names the same symbol twice';
   return null;
 }

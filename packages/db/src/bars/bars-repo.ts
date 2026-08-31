@@ -5,6 +5,7 @@ import {
   indexMembership,
   instruments,
   itemInstrumentLinks,
+  llmSignals,
   newsClusterItems,
   newsClusters,
   priceBars1d,
@@ -285,7 +286,7 @@ export async function backfillEventWindows(
   const sleep = deps.sleep ?? defaultSleep;
   const throttleMs = deps.throttleMs ?? 250;
 
-  const rows = await db
+  const linkRows = await db
     .selectDistinct({
       clusterId: newsClusters.id,
       anchor: newsClusters.firstReceivedAt,
@@ -304,6 +305,34 @@ export async function backfillEventWindows(
         gte(itemInstrumentLinks.confidence, MIN_LINK_CONFIDENCE),
       ),
     );
+  // Second pair source: company-scope signals. The discovery contract names
+  // instruments no resolver link ever will (world news carries no company name
+  // to match), and a pair without bars cannot be measured — so the same union
+  // the measurer applies has to happen here, or discovered signals get a
+  // measurer that silently finds no data. Mirrors reaction/measure-repo.ts.
+  const signalRows = await db
+    .selectDistinct({
+      clusterId: llmSignals.clusterId,
+      anchor: newsClusters.firstReceivedAt,
+      instrumentId: instruments.id,
+      symbol: instruments.symbol,
+      assetClass: instruments.assetClass,
+    })
+    .from(llmSignals)
+    .innerJoin(newsClusters, eq(newsClusters.id, llmSignals.clusterId))
+    .innerJoin(instruments, eq(instruments.id, llmSignals.instrumentId))
+    .where(
+      and(
+        gte(newsClusters.firstReceivedAt, range.from),
+        lte(newsClusters.firstReceivedAt, range.to),
+        eq(llmSignals.scope, 'company'),
+      ),
+    );
+  const seenPairs = new Set(linkRows.map((row) => `${row.clusterId}:${row.instrumentId}`));
+  const rows = [
+    ...linkRows,
+    ...signalRows.filter((row) => !seenPairs.has(`${row.clusterId}:${row.instrumentId}`)),
+  ];
 
   interface Plan {
     instrument: BarInstrument;

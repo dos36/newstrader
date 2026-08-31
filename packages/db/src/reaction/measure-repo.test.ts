@@ -25,6 +25,7 @@ import { createDb, type Db } from '../client.js';
 import {
   instruments,
   itemInstrumentLinks,
+  llmSignals,
   newsClusterItems,
   newsClusters,
   newsSources,
@@ -82,6 +83,7 @@ describe.skipIf(!testDatabaseUrl)('reaction measure repo (integration)', () => {
     await db.delete(reactionMeasurements);
     await db.delete(priceBars1m);
     await db.delete(priceBars1d);
+    await db.delete(llmSignals);
     await db.delete(itemInstrumentLinks);
     await db.delete(newsClusterItems);
     await db.delete(newsClusters);
@@ -462,6 +464,90 @@ describe.skipIf(!testDatabaseUrl)('reaction measure repo (integration)', () => {
       pubSkippedNoAnchor: 0,
     });
     expect(await db.select().from(reactionMeasurements)).toHaveLength(0);
+  });
+
+  it('measures a pair known only through a company-scope SIGNAL (discovery rows)', async () => {
+    // The discovery contract names instruments the resolver never linked —
+    // world news carries no company name for the dictionary to match — so the
+    // measurer's pair source must union signals with links, or every
+    // discovered signal stays permanently unmeasured (invariant 6).
+    const instrumentId = await seedInstrument('RDSC', 'us_equity');
+    const spyId = await seedInstrument('SPY', 'us_equity');
+    const clusterId = await seedClusterWithLinks(ANCHOR, []); // deliberately NO links
+    await db.insert(llmSignals).values({
+      id: newId(),
+      signalKey: `${clusterId}:${instrumentId}:v2m:claude-sonnet-5`,
+      clusterId,
+      scope: 'company',
+      instrumentId,
+      eventType: 'commodity_supply',
+      direction: 'bullish',
+      expectedMoveBps: 120,
+      horizon: '1d',
+      alreadyExpected: false,
+      materiality: 0.6,
+      confidence: 0.5,
+      modelId: 'claude-sonnet-5',
+      promptVersion: 'v2m',
+      retrospective: true,
+      analyzedAt: ANCHOR,
+    });
+    // [-1, ...] is the true anchor bar under the close-time selection rule;
+    // flat SPY makes abnormal = raw.
+    await seedMinuteBars(instrumentId, ANCHOR, [
+      [-1, '100.000000'],
+      [0, '100.000000'],
+      [5, '101.000000'],
+      [30, '102.000000'],
+    ]);
+    await seedMinuteBars(
+      spyId,
+      ANCHOR,
+      [-1, 0, 5, 30].map((m) => [m, '400.000000']),
+    );
+
+    const totals = await measureReactions(db, { sinceHours: SINCE_HOURS, now: NOW });
+    expect(totals.pairs).toBe(1);
+    expect(totals.measured).toBe(1);
+    const rows = await db
+      .select()
+      .from(reactionMeasurements)
+      .where(eq(reactionMeasurements.instrumentId, instrumentId));
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it('does not double-count a pair present as BOTH a link and a signal', async () => {
+    const instrumentId = await seedInstrument('RDUP', 'us_equity');
+    const clusterId = await seedClusterWithLinks(ANCHOR, [
+      { instrumentId, confidence: 0.9, method: 'ticker_exact' },
+    ]);
+    await db.insert(llmSignals).values({
+      id: newId(),
+      signalKey: `${clusterId}:${instrumentId}:v2m:claude-sonnet-5`,
+      clusterId,
+      scope: 'company',
+      instrumentId,
+      eventType: 'commodity_supply',
+      direction: 'bullish',
+      expectedMoveBps: 120,
+      horizon: '1d',
+      alreadyExpected: false,
+      materiality: 0.6,
+      confidence: 0.5,
+      modelId: 'claude-sonnet-5',
+      promptVersion: 'v2m',
+      retrospective: true,
+      analyzedAt: ANCHOR,
+    });
+    await seedMinuteBars(instrumentId, ANCHOR, [
+      [0, '100.000000'],
+      [5, '101.000000'],
+    ]);
+
+    const totals = await measureReactions(db, { sinceHours: SINCE_HOURS, now: NOW });
+    // One pair, not two: a duplicated pair would double-weight the story in
+    // every downstream statistic (and waste a second measurement pass).
+    expect(totals.pairs).toBe(1);
   });
 
   it('writes a publication-anchored m1-pub view when published_at is credible', async () => {

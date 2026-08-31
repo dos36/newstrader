@@ -29,6 +29,13 @@ export interface AuditBlob {
   maxTokens: number;
   /** Full fixed prefix, verbatim — "full prompt" means full. */
   systemPrompt: string;
+  /**
+   * Second cached system block, when the call carried one (the discovery
+   * contract's candidate universe). Recorded verbatim for the same reason the
+   * system prompt is: "full prompt" means everything the model saw, and a
+   * symbol-validation dispute is unresolvable without the exact list rendered.
+   */
+  cachedContext?: string;
   userPrompt: string;
   /**
    * The instant the context was reconstructed as of — `min(cluster anchor +

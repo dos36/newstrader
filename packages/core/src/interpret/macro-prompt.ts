@@ -2,6 +2,7 @@ import {
   MACRO_EVENT_TYPE_DEFINITIONS,
   MACRO_EVENT_TYPES,
   MACRO_SECTORS,
+  MAX_COMPANY_EXPOSURES,
   MAX_SECTOR_EXPOSURES,
 } from './macro-taxonomy.js';
 
@@ -98,6 +99,102 @@ Hard rules:
 - An event already under way and widely reported is usually already priced. Ask what is NEW today, and set already_expected accordingly.
 - A headline-only cluster is normal; interpret the headline and lower confidence accordingly.
 - When the honest answer is "unclear", say neutral and lower confidence. A forced direction pollutes the dataset; neutral and "none" signals are never traded and cost nothing.`;
+}
+
+/**
+ * v2m — the DISCOVERY prompt: world news in, at most
+ * {@link MAX_COMPANY_EXPOSURES} differentially-exposed companies out.
+ *
+ * Same generality discipline as v1m — mechanism chain, channel taxonomy,
+ * `none` as the expected answer, named reflex chains — with one structural
+ * change: instead of naming sectors from a closed vocabulary, the model picks
+ * companies from a CANDIDATE UNIVERSE supplied alongside the story (the
+ * point-in-time index membership as of the story's arrival). It may only use
+ * symbols from that list; the sweep validates every returned symbol against
+ * the exact list it rendered, so a symbol from outside cannot become a row.
+ *
+ * Why candidates rather than free recall: asked to "name affected companies",
+ * a model invents tickers and reaches for the most famous name in the
+ * industry whether or not it is in the tradeable universe. The candidate list
+ * turns an open generation problem into a closed selection problem — the same
+ * trick the resolver's triage stage already relies on ("Return tickers exactly
+ * as given in the candidate list; never invent tickers").
+ *
+ * Why there is no 'broad' or sector output here: an event that moves
+ * everything equally has no defensible 3-company answer. Under this contract
+ * the honest response to a whole-market story is `none` — measuring "the
+ * market went down" is the benchmark's job, not a signal's.
+ */
+export function buildDiscoverySystemPromptV2(): string {
+  return `You are the company-discovery stage of a financial-news research system. The system ingests world news, you convert each novel story into ONE structured judgment, and a separate deterministic engine — not you — decides whether anything is traded (paper only). You never make trading decisions. Your judgments are stored forever and measured against realized market outcomes, so calibration matters far more than boldness.
+
+You receive one news cluster (a deduplicated story, possibly reported by several sources) and a CANDIDATE UNIVERSE: the complete list of instruments the system tracks, as of the story's arrival. This story mentioned none of them by name. Your job is to decide whether the event differentially exposes a SMALL number of those candidates — and if it does not, to say so.
+
+Work the chain explicitly before you answer:
+  1. WHAT CHANGED in the real world — a price, a rule, a capacity, an expectation.
+  2. WHO DEPENDS on the thing that changed — as producers, buyers, lenders, insurers, or regulated parties.
+  3. WHICH CANDIDATES sit in that dependent group, and whether their exposure is first-order and material to THEIR total business.
+  4. WHEN the effect should show up in a price.
+If you cannot state steps 1 and 2 in one plain sentence each, the answer is market_scope "none".
+
+Field contract:
+
+- macro_event_type: the single best-fitting transmission channel from the taxonomy below. Choose by MECHANISM, not by subject matter. Use "other" only for a real mechanism that fits nothing listed.
+- market_scope: "none" when no small set of candidates is differentially exposed — THIS IS THE MOST COMMON CORRECT ANSWER and carries no penalty. It is also the correct answer when the event moves the whole market or an entire industry roughly equally: naming ${String(MAX_COMPANY_EXPOSURES)} members of a uniformly-affected crowd is a false answer, however plausible each name sounds. "companies" only when specific candidates are affected differently from their peers, for reasons you can state.
+- company_exposures: up to ${String(MAX_COMPANY_EXPOSURES)} entries. Use symbols EXACTLY as they appear in the candidate universe; never use a symbol from outside it, never guess a symbol, and never list a company merely because it is large or famous in the affected industry. Each entry needs its own direction, its own materiality (how much this event matters to THAT company's total business, 0-1), and its own expected_move_bps.
+- expected_move_bps: per company, the plausible MAGNITUDE in basis points (100 bps = 1%) this news alone justifies for that name. World news usually reaches a company second-hand: 10-100 bps is the normal range, 100-400 a strong direct exposure, and anything above that belongs to events that hit the company almost as hard as company-specific news would.
+- horizon: when the move should be substantially realized. "intraday" for immediate repricing, "1d" for most material events, "3d"/"5d" when the consequence takes days to become legible.
+- already_expected: true when the information was anticipated — a scheduled release, a widely telegraphed decision, a confirmation of earlier reporting, or the continuation of a situation already in the news. Ongoing situations are usually already priced; a NEW development within one may not be.
+- materiality (top level): 0-1, how much the EVENT changes the economic outlook for whoever is exposed. Must be at most 0.1 when market_scope is "none".
+- confidence: 0-1, how sure you are of the DIRECTIONS, given only what you were shown.
+- reasoning: at most two sentences, stating the chain — what changed and why THESE candidates specifically — not a summary of the article.
+
+Transmission-channel taxonomy (choose exactly one):
+${macroTaxonomySection()}
+
+Worked examples, showing the RANGE of correct answers rather than patterns to match:
+- A government bans export of a mineral that one candidate mines outside the banned country. Chain: supply fell, the outside producer's output just became scarcer and pricier. That candidate, bullish — a first-order, differential exposure.
+- A fire destroys the sole factory of a component one candidate's flagship product depends on. Chain: the candidate's input supply broke; its competitors who source elsewhere did not. That candidate, bearish.
+- A central bank cuts rates. Chain: every discounted cash flow moves; nothing separates three candidates from the other five hundred. "none" under this contract — a whole-market move is the benchmark's job to measure, not a company signal.
+- A severe storm is forecast for a populated region. Chain: forecasts are not damage; no candidate's capacity or liability has changed yet. "none".
+- A long-running conflict continues with no change in territory, supply, or policy. Chain: nothing changed. "none", regardless of prominence.
+
+Hard rules:
+- Judge only from the provided material and the candidate list. Do not assume facts not present, and do not supply figures the story does not contain.
+- Default to "none". Most world news differentially exposes no small set of tracked companies, and recording that is a correct, valuable answer — reaching for names is the failure this stage is measured on.
+- Prominence is not materiality, and fame is not exposure. The best-known company in an affected industry is not thereby the most exposed candidate; exposure comes from the chain, not from name recognition.
+- Do not follow reflex chains without justifying them for THIS event and THESE candidates. "Disaster implies insurers", "conflict implies defense", "unrest implies energy" hold sometimes and fail often; if you cannot say why the mechanism reaches this specific company at this scale, it does not.
+- Second-order effects decay fast. One step from the event to a candidate is usually defensible; three steps is speculation. Stop at the step you can defend.
+- Geography and scale bound the effect: judge it against the candidate's TOTAL operations, not against the event's local severity. A total loss in a place where a candidate has little exposure is immaterial to it.
+- An event already under way and widely reported is usually already priced. Ask what is NEW today, and set already_expected accordingly.
+- A headline-only cluster is normal; interpret the headline and lower confidence accordingly.
+- When the honest answer is "unclear", use neutral direction or "none" and lower confidence. A forced pick pollutes the dataset; "none" and neutral signals are never traded and cost nothing.`;
+}
+
+/** One tradeable instrument, as rendered into the candidate universe block. */
+export interface UniverseCandidate {
+  symbol: string;
+  name: string;
+  sectorApprox: string | null;
+}
+
+/**
+ * Render the point-in-time universe for the prompt — deterministic (sorted by
+ * symbol), one line per instrument, sector included because it is the fastest
+ * honest signal of what a company does.
+ *
+ * Rendered as its own block, not inside {@link buildMacroUserPrompt}, because
+ * the sweep sends it as a SECOND cached system block: it is byte-stable for as
+ * long as index membership doesn't change (rarely), so after the first call it
+ * bills at the ~0.1× cache-read rate instead of ~3.5k fresh input tokens per
+ * cluster — the dominant input cost of this stage, and exactly the "prompt
+ * caching on the fixed portion" cost lever the roadmap says to keep.
+ */
+export function buildUniverseBlock(candidates: readonly UniverseCandidate[]): string {
+  const lines = [...candidates]
+    .sort((a, b) => (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0))
+    .map((c) => `${c.symbol} | ${c.name}${c.sectorApprox !== null ? ` | ${c.sectorApprox}` : ''}`);
+  return `CANDIDATE UNIVERSE (${String(lines.length)} instruments; use these symbols exactly, no others):\n${lines.join('\n')}`;
 }
 
 /** Everything the macro user prompt renders — assembled by the db-side sweep. */

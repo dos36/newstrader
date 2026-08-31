@@ -903,12 +903,15 @@ program
   .option('--prompt-version <v>', 'macro registry version (default: the current macro version)')
   .description(
     'MACRO interpretation: clusters carrying NO instrument link (the class `interpret` discards, ' +
-      "~87% of everything clustered) into llm_signals rows of scope 'macro' or 'sector'. One call " +
-      'per cluster; a broad judgment writes one row, a sector judgment one per named sector, and ' +
-      'a "no market mechanism" judgment writes none (the expected majority answer — read the ' +
-      '"no mechanism" count, not just rows written). Requires ANTHROPIC_API_KEY: the macro output ' +
-      'contract is api-only, since the cli transport does not implement it. Guarded by the kill ' +
-      'switch and LLM_DAILY_SPEND_USD_CAP (default $5/UTC-day), which it SHARES with `interpret`.',
+      '~87% of everything clustered). The current version (v2m, contract=discovery) picks up to ' +
+      '3 differentially-exposed companies from the point-in-time candidate universe and writes ' +
+      "ordinary scope='company' llm_signals rows — measurable and evaluable by the existing " +
+      'measure/eval:signals machinery. A "no market mechanism" judgment writes no row (the ' +
+      'expected majority answer — read the "no mechanism" count, not just rows written), and ' +
+      'symbols from outside the shown universe are dropped and counted under "unknown symbols". ' +
+      'v1m (contract=sector) stays runnable via --prompt-version. Requires ANTHROPIC_API_KEY: ' +
+      'these contracts are api-only. Guarded by the kill switch and LLM_DAILY_SPEND_USD_CAP ' +
+      '(default $5/UTC-day), which it SHARES with `interpret`.',
   )
   .action(
     async (options: {
@@ -934,9 +937,10 @@ program
       const sources = expandSourceKeys(splitList(options.sources));
       const dailySpendCapUsd = parseSpendCapEnv();
 
-      // Dry runs must work before any key exists. The stub throws on BOTH
-      // methods: the sweep checks for interpretMacro up front, so a stub
-      // missing it would fail the dry run with a misleading transport error.
+      // Dry runs must work before any key exists. The stub throws on ALL
+      // methods: the sweep checks for the active contract's method up front,
+      // so a stub missing one would fail the dry run with a misleading
+      // transport error.
       const llm: LlmClient = dryRun
         ? {
             transport: 'api',
@@ -944,6 +948,9 @@ program
               throw new Error('dry-run must never reach the LLM');
             },
             interpretMacro: (): never => {
+              throw new Error('dry-run must never reach the LLM');
+            },
+            interpretDiscovery: (): never => {
               throw new Error('dry-run must never reach the LLM');
             },
           }
@@ -988,6 +995,7 @@ program
             interpreted: result.interpreted,
             'rows written': result.rowsWritten,
             'no mechanism': result.noMechanism,
+            'unknown symbols': result.unknownSymbols,
             duplicates: result.duplicates,
             failures: result.failures,
             'spend cap hit': result.spendCapReached,
