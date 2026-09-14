@@ -8,5 +8,8 @@ cdk.out/
 **/data/raw/
 coverage/
 
+# Per-user Claude Code permissions (shared .claude/settings.json, if ever added, stays tracked)
+.claude/settings.local.json
+
 # Local private keys (IBKR OAuth signing/encryption, DH params) — NEVER commit
 secrets/
