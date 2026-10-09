@@ -31,6 +31,7 @@ minimum to avoid doing damage; 4–5 are needed before touching money-path or an
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | [`codebase-guide.md`](codebase-guide.md)                                     | Structural reference: packages, modules, data flow, conventions, testing, gotchas. Answers "where does X live / how do I change Y."                           | Current                                                                      |
 | [`business-logic.md`](business-logic.md)                                     | The rules and their motivation: pipeline-stage semantics, every tunable parameter and why it has that value, the invariants and what breaks without them.     | Current                                                                      |
+| [`milestones.md`](milestones.md)                                             | What each built milestone (M0, M1, M3, M4, M5) added and why — the narrative formerly in the top-level README.                                                | Current                                                                      |
 | [`roadmap.md`](roadmap.md)                                                   | Remaining work (M2 LLM stage, M5 evaluation), safety gaps, measured debt, deferred ideas with revival triggers, idea parking lot.                             | Current                                                                      |
 | [`newstrader-architecture.md`](newstrader-architecture.md)                   | The original approved architecture, and the durable record of verified vendor facts (costs, rate limits, ToS, broker/venue analysis for a Canadian resident). | **Keep — has a drift section at the top.** Its §10 build order is historical |
 | [`newstrader-implementation-prompt.md`](newstrader-implementation-prompt.md) | The build spec that produced the code.                                                                                                                        | **Historical.** Still the most specific spec for unbuilt parts               |
@@ -46,6 +47,8 @@ Keeping these honest is cheap if done at the time and expensive later.
   is meant to be exhaustive) and the `rules_versions` label if it is engine config.
 - **Added a module, table, or pipeline stage?** → `codebase-guide.md`, and `../README.md` if it adds
   a CLI command or a deploy step.
+- **Finished a milestone?** → `milestones.md` (what it added and why) and the status table in
+  `roadmap.md`.
 - **Finished, dropped, or discovered work?** → `roadmap.md`. Deleting a roadmap item is a decision;
   say why in the commit.
 - **Learned a vendor/cost/regulatory fact** (a price changed, an entitlement resolved, a ToS
